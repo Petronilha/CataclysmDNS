@@ -55,28 +55,46 @@ class ProxyManager:
     def test_tor_connection(self, proxy: ProxyConfig) -> bool:
         """Testa se o Tor está funcionando"""
         try:
-            # Teste simples com socket
+            # Teste básico de socket primeiro
             test_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             test_socket.settimeout(5)
             test_socket.connect((proxy.host, proxy.port))
             test_socket.close()
+            logger.info(f"✓ Socket conectado a {proxy.host}:{proxy.port}")
             
-            # Teste com requests
+            # Agora testa com requests usando socks5h (resolve DNS pelo proxy)
             proxies = {
                 'http': f'socks5h://{proxy.host}:{proxy.port}',
                 'https': f'socks5h://{proxy.host}:{proxy.port}'
             }
             
-            response = requests.get('https://check.torproject.org/api/ip', 
-                                  proxies=proxies, 
-                                  timeout=10)
-            
-            if response.json().get('IsTor', False):
-                logger.info(f"✓ Tor está funcionando. IP: {response.json().get('IP')}")
-                return True
-            else:
-                logger.error("✗ Não está usando Tor")
-                return False
+            # Usa um site confiável para teste
+            try:
+                response = requests.get('https://check.torproject.org/api/ip', 
+                                      proxies=proxies, 
+                                      timeout=10)
+                
+                data = response.json()
+                if data.get('IsTor', False):
+                    logger.info(f"✓ Tor está funcionando! IP: {data.get('IP')}")
+                    return True
+                else:
+                    logger.error("✗ Não está usando Tor")
+                    return False
+            except requests.exceptions.RequestException as e:
+                logger.warning(f"Falha no teste Tor, tentando alternativa: {e}")
+                # Tenta um site alternativo
+                try:
+                    response = requests.get('https://ipinfo.io/json', 
+                                          proxies=proxies, 
+                                          timeout=10)
+                    if response.status_code == 200:
+                        logger.info(f"✓ Proxy funcionando com IP: {response.json().get('ip')}")
+                        return True
+                except:
+                    pass
+                    
+            return False
                 
         except Exception as e:
             logger.error(f"✗ Erro ao testar conexão Tor: {e}")
@@ -90,31 +108,26 @@ class ProxyManager:
         
         proxy = self.get_next_proxy()
         if proxy.proxy_type == "socks5":
-            # Força TUDO a passar pelo Tor
-            socks.set_default_proxy(socks.SOCKS5, proxy.host, proxy.port)
-            socket.socket = socks.socksocket
-          
-            # Importante: força resolução DNS pelo proxy
-            socket.getaddrinfo = self._proxy_getaddrinfo
-            
-            # Espera um pouco para o Tor inicializar completamente
-            time.sleep(2)
-            
-            # Testa a conexão primeiro
-            if not self.test_tor_connection(proxy):
-                raise ConnectionError("Não foi possível conectar ao Tor")
-            
             try:
+                # Primeiro verifica se o Tor está rodando
+                test_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                test_socket.settimeout(5)
+                try:
+                    test_socket.connect((proxy.host, proxy.port))
+                    test_socket.close()
+                except Exception as e:
+                    raise ConnectionError(f"Não foi possível conectar ao Tor: {e}")
+                
                 # Salva as funções originais
                 self.original_socket = socket.socket
                 self.original_getaddrinfo = socket.getaddrinfo
                 
-                # Configura o proxy
+                # Configura o proxy sem testar ainda
                 socks.set_default_proxy(
                     socks.SOCKS5, 
                     addr=proxy.host, 
                     port=proxy.port,
-                    rdns=True,
+                    rdns=True,  # Força resolução DNS pelo proxy
                     username=proxy.username,
                     password=proxy.password
                 )
@@ -123,22 +136,29 @@ class ProxyManager:
                 socket.socket = socks.socksocket
                 
                 # Função personalizada para getaddrinfo
-                def proxy_getaddrinfo(*args):
+                def proxy_getaddrinfo(*args, **kwargs):
                     # Força resolução de DNS pelo proxy
                     return [(socket.AF_INET, socket.SOCK_STREAM, 6, '', (args[0], args[1]))]
                 
                 socket.getaddrinfo = proxy_getaddrinfo
                 
+                # Agora espera um pouco e testa a conexão
+                time.sleep(1)
+                
+                if not self.test_tor_connection(proxy):
+                    self.reset_socket()
+                    raise ConnectionError("Não foi possível conectar ao Tor")
+                
                 logger.info(f"✓ Proxy SOCKS5 configurado: {proxy.host}:{proxy.port}")
+                
             except Exception as e:
                 logger.error(f"✗ Erro ao configurar proxy: {e}")
                 self.reset_socket()
                 raise
     
     def _proxy_getaddrinfo(self, *args, **kwargs):
-      # Força a resolução pelo proxy
-      return [(socket.AF_INET, socket.SOCK_STREAM, 6, '', (args[0], args[1]))]
-
+        """Força a resolução pelo proxy"""
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, '', (args[0], args[1]))]
     
     def reset_socket(self):
         """Reseta o socket para não usar proxy"""

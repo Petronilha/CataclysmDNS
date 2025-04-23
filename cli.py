@@ -80,46 +80,91 @@ def test_tor_connection():
 def diagnose_tor_connection():
     """Diagnóstico da conexão Tor"""
     import subprocess
+    import socket
     
     console.print("\n[yellow]🔍 Diagnóstico da conexão Tor[/]")
     
-    # Verifica se o serviço Tor está rodando
+    # 1. Verifica se o serviço Tor está rodando
     try:
-        result = subprocess.run(['systemctl', 'status', 'tor'], 
-                              capture_output=True, text=True)
-        if "active (running)" in result.stdout:
+        # Tenta diferentes formas de verificar o serviço
+        methods = [
+            ['systemctl', 'is-active', 'tor'],
+            ['service', 'tor', 'status'],
+            ['pgrep', '-f', 'tor']
+        ]
+        
+        service_running = False
+        for method in methods:
+            try:
+                result = subprocess.run(method, capture_output=True, text=True)
+                if method[0] == 'systemctl' and result.stdout.strip() == 'active':
+                    service_running = True
+                    break
+                elif method[0] == 'service' and 'running' in result.stdout.lower():
+                    service_running = True
+                    break
+                elif method[0] == 'pgrep' and result.stdout.strip():
+                    service_running = True
+                    break
+            except:
+                continue
+        
+        if service_running:
             console.print("✓ Serviço Tor está rodando")
         else:
             console.print("✗ Serviço Tor não está rodando corretamente")
-    except:
-        console.print("⚠ Não foi possível verificar o status do Tor")
+            console.print("  [yellow]Tente: sudo service tor start[/]")
+    except Exception as e:
+        console.print(f"⚠ Não foi possível verificar o status do Tor: {e}")
     
-    # Verifica a porta 9050
+    # 2. Verifica a porta 9050
     try:
-        import socket
         test_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         test_socket.settimeout(2)
         test_socket.connect(("127.0.0.1", 9050))
         test_socket.close()
         console.print("✓ Porta 9050 está aberta")
-    except:
-        console.print("✗ Não foi possível conectar na porta 9050")
+    except Exception as e:
+        console.print(f"✗ Não foi possível conectar na porta 9050: {e}")
+        console.print("  [yellow]Verifique se o Tor está configurado para usar esta porta[/]")
     
-    # Teste de conexão com curl
+    # 3. Teste de conexão com curl (se disponível)
     try:
         result = subprocess.run(['curl', '--socks5', '127.0.0.1:9050', 
                                'https://check.torproject.org/api/ip'], 
                               capture_output=True, text=True)
-        if "IsTor" in result.stdout:
-            console.print("✓ Tor está funcionando corretamente")
+        if result.returncode == 0 and "IsTor" in result.stdout:
+            console.print("✓ Tor está funcionando corretamente (teste com curl)")
         else:
-            console.print("✗ Tor não está funcionando")
-    except:
-        console.print("⚠ Não foi possível testar com curl")
+            console.print("✗ Tor não está funcionando (teste com curl)")
+    except FileNotFoundError:
+        console.print("⚠ curl não está instalado - pulando teste")
+    except Exception as e:
+        console.print(f"⚠ Não foi possível testar com curl: {e}")
     
+    # 4. Teste com Python requests
+    try:
+        import requests
+        proxies = {
+            'http': 'socks5h://127.0.0.1:9050',
+            'https': 'socks5h://127.0.0.1:9050'
+        }
+        response = requests.get('https://check.torproject.org/api/ip', 
+                              proxies=proxies, timeout=10)
+        data = response.json()
+        if data.get('IsTor', False):
+            console.print(f"✓ Tor funcionando! IP: {data.get('IP')}")
+        else:
+            console.print("✗ Conexão não está passando pelo Tor")
+    except Exception as e:
+        console.print(f"✗ Erro no teste com requests: {e}")
+    
+    console.print("\n[bold]Soluções comuns:[/]")
+    console.print("1. Verificar se o Tor está instalado: [yellow]sudo apt install tor[/]")
+    console.print("2. Iniciar o serviço: [yellow]sudo service tor start[/]")
+    console.print("3. Verificar configuração em: [yellow]/etc/tor/torrc[/]")
+    console.print("4. Verificar logs: [yellow]sudo journalctl -u tor[/]")
     console.print("")
-
-
 
 
 def error_handler(func):
@@ -246,7 +291,12 @@ def enum(
     if proxy:
         proxy_manager.add_proxy(proxy)
         proxy_manager.enabled = True
-        proxy_manager.setup_socket()
+        try:
+            proxy_manager.setup_socket()
+        except ConnectionError as e:
+            console.print(f"[red]Erro: {e}[/]")
+            console.print("[yellow]Execute novamente com conexão Tor funcionando ou sem --proxy[/]")
+            raise typer.Exit(1)
     
     # Configurar rate limiter
     rate_limiter = RateLimiter(RateLimitConfig(requests_per_second=rate_limit))
