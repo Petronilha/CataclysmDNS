@@ -208,4 +208,106 @@ async def enum_subdomains(
         resolver_pool.cleanup()
 
 
-# Restante do código igual...
+def resolve_record(
+    name: str,
+    rdtype: str,
+    nameserver: Optional[str] = None,
+    timeout: float = 2.0
+) -> List[str]:
+    """
+    Versão síncrona para compatibilidade
+    """
+    cache_key = f"{name}:{rdtype}"
+    
+    if cache_key in response_cache:
+        logger.debug(f"Cache hit: {cache_key}")
+        return response_cache[cache_key]
+    
+    resolver = dns.resolver.Resolver()
+    if nameserver:
+        resolver.nameservers = [nameserver]
+    
+    resolver.timeout = timeout
+    resolver.lifetime = timeout * 2
+    
+    try:
+        answers = resolver.resolve(name, rdtype)
+        result = [rdata.to_text() for rdata in answers]
+        response_cache[cache_key] = result
+        return result
+    except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN):
+        return []
+    except Exception as e:
+        logger.debug(f"Erro ao resolver {name} {rdtype}: {e}")
+        return []
+
+
+def generate_permutations(
+    base: List[str],
+    suffixes: Optional[List[str]] = None,
+    prefixes: Optional[List[str]] = None,
+    prefix_numbers: int = 3,
+    limit_permutations: Optional[int] = None
+) -> List[str]:
+    """
+    Geração de permutações com opção de limite
+    """
+    suffixes = suffixes or ["dev", "test", "stage", "prod", "api", "admin"]
+    prefixes = prefixes or ["vpn", "mail", "www", "app", "cloud"]
+    
+    perms = set(base)
+    
+    # Adiciona sufixos
+    for b in base:
+        for suf in suffixes:
+            perms.add(f"{b}-{suf}")
+            perms.add(f"{b}{suf}")
+    
+    # Adiciona prefixos
+    for b in base:
+        for pre in prefixes:
+            perms.add(f"{pre}-{b}")
+            perms.add(f"{pre}{b}")
+    
+    # Adiciona números
+    for b in base:
+        for i in range(1, prefix_numbers + 1):
+            perms.add(f"{b}{i}")
+            perms.add(f"{b}-{i}")
+    
+    # Aplica limite se especificado
+    if limit_permutations and len(perms) > limit_permutations:
+        logger.warning(f"Limitando permutações de {len(perms)} para {limit_permutations}")
+        perms = set(list(perms)[:limit_permutations])
+    else:
+        logger.info(f"Processando {len(perms)} permutações")
+    
+    return sorted(perms)
+
+
+def detect_wildcard(domain: str, tests: int = 5) -> bool:
+    """
+    Detecção de wildcard DNS aprimorada com múltiplos testes
+    """
+    random_subs = []
+    for _ in range(tests):
+        rnd = "".join(random.choices(string.ascii_lowercase + string.digits, k=12))
+        random_subs.append(rnd)
+    
+    positive_responses = 0
+    
+    for sub in random_subs:
+        try:
+            answers = dns.resolver.resolve(f"{sub}.{domain}", "A", raise_on_no_answer=False)
+            if answers:
+                positive_responses += 1
+        except Exception:
+            continue
+    
+    # Se mais de 60% dos testes aleatorios responderem, provavelmente é wildcard
+    wildcard_detected = positive_responses >= (tests * 0.6)
+    
+    if wildcard_detected:
+        logger.warning(f"Wildcard DNS detectado para {domain}")
+    
+    return wildcard_detected
