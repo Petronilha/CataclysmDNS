@@ -51,33 +51,42 @@ class ProxyManager:
         return proxy
     
     def setup_socket(self):
-      """Configura o socket para usar o proxy atual"""
-      if not self.enabled or not self.proxies:
-          logger.warning("Proxy não habilitado ou lista vazia")
-          return
-      
-      proxy = self.get_next_proxy()
-      if proxy.proxy_type == "socks5":
-          try:
-              socks.set_default_proxy(
-                  socks.SOCKS5, 
-                  proxy.host, 
-                  proxy.port,
-                  username=proxy.username,
-                  password=proxy.password,
-                  rdns=True
-              )
-              socket.socket = socks.socksocket
-              logger.info(f"✓ Proxy SOCKS5 configurado: {proxy.host}:{proxy.port}")
-              
-              # Teste de conexão
-              test_socket = socket.socket()
-              test_socket.connect(("127.0.0.1", proxy.port))
-              test_socket.close()
-              logger.info("✓ Teste de conexão bem-sucedido")
-          except Exception as e:
-              logger.error(f"✗ Erro ao configurar proxy: {e}")
-              raise
+          """Configura o socket para usar o proxy atual"""
+          if not self.enabled or not self.proxies:
+              return
+          
+          proxy = self.get_next_proxy()
+          if proxy.proxy_type == "socks5":
+              try:
+                  # Importante: definir o proxy antes de substituir o socket
+                  socks.set_default_proxy(
+                      socks.SOCKS5, 
+                      proxy.host, 
+                      proxy.port,
+                      username=proxy.username,
+                      password=proxy.password,
+                      rdns=True
+                  )
+                  
+                  # Salvar o socket original
+                  self.original_socket = socket.socket
+                  
+                  # Substituir o socket
+                  socket.socket = socks.socksocket
+                  
+                  # Teste de conexão
+                  test_socket = socks.socksocket()
+                  test_socket.settimeout(5)
+                  test_socket.connect((proxy.host, proxy.port))
+                  test_socket.close()
+                  
+                  logger.info(f"✓ Proxy SOCKS5 configurado: {proxy.host}:{proxy.port}")
+              except Exception as e:
+                  logger.error(f"✗ Erro ao configurar proxy: {e}")
+                  # Restaurar socket original em caso de erro
+                  if hasattr(self, 'original_socket'):
+                      socket.socket = self.original_socket
+                  raise
     
     def reset_socket(self):
         """Reseta o socket para não usar proxy"""
