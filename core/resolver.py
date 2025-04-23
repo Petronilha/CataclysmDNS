@@ -9,79 +9,112 @@ from datetime import datetime, timedelta
 from asyncio import Semaphore
 import backoff
 from concurrent.futures import ThreadPoolExecutor
+import json
+from cachetools import TTLCache
 
+from core.proxy_manager import ProxyManager
+from core.rate_limiter import RateLimiter, RateLimitConfig
 from utils.logger import setup_logger
 
 logger = setup_logger("resolver")
 
-# Cache global de respostas
+# Cache global de respostas com TTL
 CACHE_TTL = 300  # 5 minutos
-response_cache: Dict[str, Dict] = {}
+response_cache = TTLCache(maxsize=10000, ttl=CACHE_TTL)
+
+# Cache de configuração de resolvers
+resolver_cache = TTLCache(maxsize=100, ttl=3600)  # 1 hora
 
 
 class DNSResolverPool:
-    """Pool de resolvers DNS para melhor performance"""
+    """Pool de resolvers DNS com rotação e suporte a proxy"""
     
-    def __init__(self, size: int = 10, nameservers: Optional[List[str]] = None):
+    def __init__(self, size: int = 10, nameservers: Optional[List[str]] = None, 
+                 proxy_manager: Optional[ProxyManager] = None):
         self.size = size
         self.resolvers = []
+        self.index = 0
+        self.proxy_manager = proxy_manager
         
-        for _ in range(size):
-            if nameservers:
-                resolver = dns.asyncresolver.Resolver(configure=False)
-                resolver.nameservers = nameservers
-            else:
-                resolver = dns.asyncresolver.get_default_resolver()
+        # Lista expandida de nameservers públicos
+        self.public_nameservers = [
+            # Cloudflare
+            "1.1.1.1", "1.0.0.1",
+            # Google
+            "8.8.8.8", "8.8.4.4",
+            # Quad9
+            "9.9.9.9", "149.112.112.112",
+            # OpenDNS
+            "208.67.222.222", "208.67.220.220",
+            # Comodo
+            "8.26.56.26", "8.20.247.20",
+            # AdGuard
+            "94.140.14.14", "94.140.15.15",
+            # CleanBrowsing
+            "185.228.168.9", "185.228.169.9",
+            # Alternate DNS
+            "76.76.19.19", "76.223.122.150"
+        ]
+        
+        nameservers = nameservers or self.public_nameservers
+        
+        for i in range(size):
+            if self.proxy_manager and self.proxy_manager.enabled:
+                self.proxy_manager.setup_socket()
             
+            resolver = dns.asyncresolver.Resolver(configure=False)
+            # Rotaciona entre os nameservers disponíveis
+            resolver.nameservers = [nameservers[i % len(nameservers)]]
             resolver.timeout = 2.0
             resolver.lifetime = 5.0
             self.resolvers.append(resolver)
     
     def get_resolver(self) -> dns.asyncresolver.Resolver:
-        """Retorna um resolver do pool de forma circular"""
-        resolver = self.resolvers.pop(0)
-        self.resolvers.append(resolver)
+        """Retorna um resolver do pool de forma round-robin"""
+        resolver = self.resolvers[self.index]
+        self.index = (self.index + 1) % self.size
+        
+        # Rotaciona o nameserver periodicamente
+        if self.index == 0:
+            self._rotate_nameservers()
+        
         return resolver
+    
+    def _rotate_nameservers(self):
+        """Rotaciona os nameservers entre os resolvers"""
+        random.shuffle(self.public_nameservers)
+        for i, resolver in enumerate(self.resolvers):
+            resolver.nameservers = [self.public_nameservers[i % len(self.public_nameservers)]]
 
 
 def cache_response(func):
-    """Decorator para cache de respostas DNS"""
-    def wrapper(*args, **kwargs):
+    """Decorator para cache de respostas DNS com TTLCache"""
+    async def wrapper(*args, **kwargs):
         cache_key = f"{args[0]}:{args[1]}"  # name:rdtype
-        now = datetime.now()
         
         if cache_key in response_cache:
-            cached_data = response_cache[cache_key]
-            if now - cached_data['timestamp'] < timedelta(seconds=CACHE_TTL):
-                logger.debug(f"Cache hit: {cache_key}")
-                return cached_data['response']
+            logger.debug(f"Cache hit: {cache_key}")
+            return response_cache[cache_key]
         
-        response = func(*args, **kwargs)
-        response_cache[cache_key] = {'response': response, 'timestamp': now}
+        response = await func(*args, **kwargs)
+        if response:  # Só faz cache de respostas válidas
+            response_cache[cache_key] = response
         return response
     
     return wrapper
 
 
 @cache_response
-def resolve_record(
+async def resolve_record_async(
     name: str,
     rdtype: str,
-    nameserver: Optional[str] = None,
-    timeout: float = 2.0
+    resolver: dns.asyncresolver.Resolver
 ) -> List[str]:
     """
-    Resolve um registro DNS com cache
+    Resolve um registro DNS de forma assíncrona com cache
     """
-    resolver = dns.resolver.Resolver()
-    if nameserver:
-        resolver.nameservers = [nameserver]
-    
-    resolver.timeout = timeout
-    resolver.lifetime = timeout * 2
-    
     try:
-        answers = resolver.resolve(name, rdtype)
+        answers = await resolver.resolve(name, rdtype)
         return [rdata.to_text() for rdata in answers]
     except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN):
         return []
@@ -101,27 +134,36 @@ async def resolve_subdomain_async_with_retry(
     domain: str,
     types: List[str],
     resolver: dns.asyncresolver.Resolver,
-    semaphore: Semaphore
+    semaphore: Semaphore,
+    rate_limiter: Optional[RateLimiter] = None
 ) -> Dict[str, Dict[str, List[str]]]:
     """
     Resolve subdomínio com retry automático
     """
     fqdn = f"{sub}.{domain}"
     async with semaphore:
+        if rate_limiter:
+            await rate_limiter.acquire()
+        
         result: Dict[str, List[str]] = {}
+        
+        # Resolve todos os tipos em paralelo
+        tasks = []
         for rd in types:
-            try:
-                answers = await resolver.resolve(fqdn, rd)
-                result[rd] = [rdata.to_text() for rdata in answers]
-            except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN):
-                continue
-            except Exception as e:
-                logger.debug(f"Erro ao resolver {fqdn} {rd}: {e}")
-                continue
+            tasks.append(resolve_record_async(fqdn, rd, resolver))
+        
+        responses = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        for rd, response in zip(types, responses):
+            if isinstance(response, list) and response:
+                result[rd] = response
         
         if result:
             logger.info(f"[+] {fqdn} -> {result}")
+            if rate_limiter:
+                rate_limiter.report_success()
             return {fqdn: result}
+        
         return {}
 
 
@@ -130,32 +172,83 @@ async def enum_subdomains(
     subs: List[str],
     types: List[str],
     nameserver: Optional[str] = None,
-    workers: int = 20
+    workers: int = 20,
+    proxy_manager: Optional[ProxyManager] = None,
+    rate_limiter: Optional[RateLimiter] = None
 ) -> Dict[str, Dict[str, List[str]]]:
     """
-    Enumera subdomínios com pool de resolvers
+    Enumera subdomínios com pool de resolvers e paralelismo otimizado
     """
+    # Ajusta dinamicamente o número de workers baseado no tamanho da wordlist
+    optimal_workers = min(workers, max(20, len(subs) // 50))
+    
     nameservers = [nameserver] if nameserver else None
-    resolver_pool = DNSResolverPool(size=max(5, workers // 4), nameservers=nameservers)
+    resolver_pool = DNSResolverPool(
+        size=max(5, optimal_workers // 4), 
+        nameservers=nameservers,
+        proxy_manager=proxy_manager
+    )
     
-    semaphore = asyncio.Semaphore(workers)
+    semaphore = asyncio.Semaphore(optimal_workers)
     
-    tasks = []
-    for sub in subs:
-        resolver = resolver_pool.get_resolver()
-        task = resolve_subdomain_async_with_retry(sub, domain, types, resolver, semaphore)
-        tasks.append(task)
+    # Divide as tarefas em chunks para melhor distribuição
+    chunk_size = max(10, len(subs) // optimal_workers)
+    chunks = [subs[i:i + chunk_size] for i in range(0, len(subs), chunk_size)]
     
-    results = await asyncio.gather(*tasks, return_exceptions=True)
+    async def process_chunk(chunk):
+        results = []
+        for sub in chunk:
+            resolver = resolver_pool.get_resolver()
+            result = await resolve_subdomain_async_with_retry(
+                sub, domain, types, resolver, semaphore, rate_limiter
+            )
+            results.append(result)
+        return results
     
+    all_results = await asyncio.gather(*[process_chunk(chunk) for chunk in chunks])
+    
+    # Combina todos os resultados
     combined: Dict[str, Dict[str, List[str]]] = {}
-    for r in results:
-        if isinstance(r, dict):
-            combined.update(r)
-        elif isinstance(r, Exception):
-            logger.warning(f"Erro durante enumeração: {r}")
+    for chunk_results in all_results:
+        for result in chunk_results:
+            if isinstance(result, dict):
+                combined.update(result)
     
     return combined
+
+
+def resolve_record(
+    name: str,
+    rdtype: str,
+    nameserver: Optional[str] = None,
+    timeout: float = 2.0
+) -> List[str]:
+    """
+    Versão síncrona para compatibilidade
+    """
+    cache_key = f"{name}:{rdtype}"
+    
+    if cache_key in response_cache:
+        logger.debug(f"Cache hit: {cache_key}")
+        return response_cache[cache_key]
+    
+    resolver = dns.resolver.Resolver()
+    if nameserver:
+        resolver.nameservers = [nameserver]
+    
+    resolver.timeout = timeout
+    resolver.lifetime = timeout * 2
+    
+    try:
+        answers = resolver.resolve(name, rdtype)
+        result = [rdata.to_text() for rdata in answers]
+        response_cache[cache_key] = result
+        return result
+    except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN):
+        return []
+    except Exception as e:
+        logger.debug(f"Erro ao resolver {name} {rdtype}: {e}")
+        return []
 
 
 def generate_permutations(

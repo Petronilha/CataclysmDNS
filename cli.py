@@ -8,6 +8,9 @@ from typing import Optional
 from typing_extensions import Annotated
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.console import Console
+from rich.table import Table
+from rich.panel import Panel
+from rich.text import Text
 from functools import wraps
 import dns.resolver
 import ipaddress
@@ -23,6 +26,8 @@ from core.zone_transfer import attempt_axfr
 from core.brute_force import brute_force
 from core.dnssec_checker import check_dnssec
 from core.monitoring import monitor
+from core.proxy_manager import ProxyManager
+from core.rate_limiter import RateLimiter, RateLimitConfig
 from utils.logger import setup_logger
 
 app = typer.Typer(help="CataclysmDNS — toolkit avançado de pentest DNS")
@@ -105,6 +110,41 @@ def save_results(results: dict, output_format: str, output_file: str):
     console.print(f"[green]Resultados salvos em: {output_file}[/]")
 
 
+def display_results_table(results: dict):
+    """Exibe os resultados em formato de tabela"""
+    table = Table(title="🔍 Resultados da Enumeração", show_header=True, header_style="bold cyan")
+    table.add_column("Subdomínio", style="green", width=40)
+    table.add_column("Tipo", style="magenta", width=10)
+    table.add_column("Valor", style="white", width=40)
+    
+    for fqdn, records in results.items():
+        for rdtype, values in records.items():
+            for value in values:
+                table.add_row(fqdn, rdtype, value)
+    
+    console.print()
+    console.print(table)
+    console.print()
+
+
+def display_summary(results: dict, wildcard_detected: bool):
+    """Exibe um resumo dos resultados"""
+    total_subdomains = len(results)
+    total_records = sum(len(records) for records in results.values())
+    
+    summary = Panel(
+        f"""
+[green]✓[/] Total de subdomínios encontrados: [bold]{total_subdomains}[/]
+[blue]ℹ[/] Total de registros DNS: [bold]{total_records}[/]
+[yellow]⚠[/] Wildcard DNS: [bold]{'Detectado' if wildcard_detected else 'Não detectado'}[/]
+""",
+        title="📊 Sumário",
+        border_style="blue"
+    )
+    
+    console.print(summary)
+
+
 @app.command()
 @error_handler
 def enum(
@@ -115,6 +155,8 @@ def enum(
     output: Annotated[Optional[str], typer.Option(help="Arquivo de output")] = None,
     format: Annotated[str, typer.Option(help="Formato do output (json, csv)")] = "json",
     verbose: Annotated[bool, typer.Option("--verbose", "-v", help="Modo verboso")] = False,
+    proxy: Annotated[Optional[str], typer.Option(help="Proxy SOCKS5/HTTP (ex: socks5://127.0.0.1:9050)")] = None,
+    rate_limit: Annotated[float, typer.Option(help="Requisições por segundo")] = 10.0,
 ):
     """
     Enumeração avançada de subdomínios com múltiplos tipos de registro
@@ -132,6 +174,15 @@ def enum(
         console.print(f"[red]Erro: Wordlist não encontrada: {wordlist}[/]")
         raise typer.Exit(1)
     
+    # Configurar proxy se especificado
+    proxy_manager = ProxyManager()
+    if proxy:
+        proxy_manager.add_proxy(proxy)
+        proxy_manager.enabled = True
+    
+    # Configurar rate limiter
+    rate_limiter = RateLimiter(RateLimitConfig(requests_per_second=rate_limit))
+    
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
@@ -140,28 +191,31 @@ def enum(
         task = progress.add_task(f"[cyan]Enumerando {domain}...", total=None)
         
         subs = [l.strip() for l in open(wordlist, encoding="utf-8") if l.strip()]
-        # Removido o limite de permutações
         subs = generate_permutations(subs, limit_permutations=None)
         
         if verbose:
             console.print(f"[dim]Carregados {len(subs)} subdomínios para teste[/]")
+            if proxy:
+                console.print(f"[dim]Usando proxy: {proxy}[/]")
+            console.print(f"[dim]Rate limit: {rate_limit} req/s[/]")
         
         types = ["A", "AAAA", "MX", "TXT", "PTR"]
-        results = asyncio.run(enum_subdomains(domain, subs, types, nameserver, workers))
+        results = asyncio.run(enum_subdomains(
+            domain, subs, types, nameserver, workers, proxy_manager, rate_limiter
+        ))
         
         progress.update(task, completed=True)
     
-    console.print(f"\n[green]Encontrados {len(results)} subdomínios válidos.[/]")
+    wildcard_detected = detect_wildcard(domain)
     
-    if detect_wildcard(domain):
-        console.print("[yellow]⚠️  Atenção: Wildcard DNS detectado.[/]")
-    
-    if verbose:
-        for fqdn, records in results.items():
-            console.print(f"\n[bold]{fqdn}[/]")
-            for rdtype, values in records.items():
-                for value in values:
-                    console.print(f"  {rdtype}: {value}")
+    # Exibe os resultados de forma bonita
+    if results:
+        display_results_table(results)
+        display_summary(results, wildcard_detected)
+    else:
+        console.print("[yellow]Nenhum subdomínio encontrado.[/]")
+        if wildcard_detected:
+            console.print("[yellow]⚠️  Isso pode ser devido à detecção de Wildcard DNS.[/]")
     
     if output:
         save_results(results, format, output)
@@ -178,8 +232,17 @@ def resolve(
     """Resolve um único registro DNS de forma síncrona."""
     values = resolve_record(name, record, nameserver=nameserver, timeout=timeout)
     if values:
+        table = Table(show_header=True, header_style="bold cyan")
+        table.add_column("Registro", style="green")
+        table.add_column("Tipo", style="magenta")
+        table.add_column("Valor", style="white")
+        
         for v in values:
-            console.print(f"[green]{name} {record} -> {v}[/]")
+            table.add_row(name, record, v)
+        
+        console.print()
+        console.print(table)
+        console.print()
     else:
         console.print(f"[red]❌ Sem resposta para {name} {record}[/]")
 
@@ -201,10 +264,19 @@ def zone_transfer(
         raise typer.Exit(1)
     
     records = attempt_axfr(domain, nameserver)
-    for rdtype, recs in records.items():
-        console.print(f"\n[bold]=== {rdtype} ===[/]")
-        for r in recs:
-            console.print(f" - {r}")
+    
+    if records:
+        for rdtype, recs in records.items():
+            table = Table(title=f"Registros {rdtype}", show_header=True, header_style="bold cyan")
+            table.add_column("Registro", style="white")
+            
+            for r in recs:
+                table.add_row(r)
+            
+            console.print()
+            console.print(table)
+    else:
+        console.print("[yellow]Nenhum registro encontrado na transferência de zona.[/]")
     
     if output and records:
         save_results({"zone_transfer": records}, "json", output)
@@ -234,7 +306,11 @@ def brute(
         results = asyncio.run(brute_force(domain, wordlist, workers))
         progress_bar.update(task, completed=True)
     
-    console.print(f"\n[green]Brute force: {len(results)} encontrados.[/]")
+    if results:
+        display_results_table(results)
+        console.print(f"\n[green]Brute force: {len(results)} subdomínios encontrados.[/]")
+    else:
+        console.print("[yellow]Nenhum subdomínio encontrado no brute force.[/]")
     
     if output:
         save_results(results, "json", output)
@@ -252,8 +328,19 @@ def dnssec(
         raise typer.Exit(1)
     
     enabled = check_dnssec(domain)
-    status = '[green]habilitado[/]' if enabled else '[red]não habilitado[/]'
-    console.print(f"DNSSEC {status} para {domain}.")
+    
+    result_panel = Panel(
+        f"""
+[bold]Domínio:[/] {domain}
+[bold]Status:[/] {'[green]Habilitado[/]' if enabled else '[red]Não habilitado[/]'}
+""",
+        title="🔐 Verificação DNSSEC",
+        border_style="blue"
+    )
+    
+    console.print()
+    console.print(result_panel)
+    console.print()
 
 
 @app.command()
