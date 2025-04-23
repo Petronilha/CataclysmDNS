@@ -26,7 +26,6 @@ from core.zone_transfer import attempt_axfr
 from core.brute_force import brute_force
 from core.dnssec_checker import check_dnssec
 from core.monitoring import monitor
-from core.proxy_manager import ProxyManager
 from core.rate_limiter import RateLimiter, RateLimitConfig
 from utils.logger import setup_logger
 
@@ -41,173 +40,27 @@ def show_banner():
  ██████╗ █████╗ ████████╗ █████╗  ██████╗██╗  ██╗   ██╗███████╗███╗   ███╗
 ██╔════╝██╔══██╗╚══██╔══╝██╔══██╗██╔════╝██║  ╚██╗ ██╔╝██╔════╝████╗ ████║
 ██║     ███████║   ██║   ███████║██║     ██║   ╚████╔╝ ███████╗██╔████╔██║
-██║     ██╔══██║   ██║   ██╔══██║██║     ██║    ╚██╔╝  ╚════██║██║╚██╔╝██║
-╚██████╗██║  ██║   ██║   ██║  ██║╚██████╗███████╗██║   ███████║██║ ╚═╝ ██║
- ╚═════╝╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝ ╚═════╝╚══════╝╚═╝   ╚══════╝╚═╝     ╚═╝
-                  ██████╗ ███╗   ██╗███████╗                              
-                  ██╔══██╗████╗  ██║██╔════╝                              
-                  ██║  ██║██╔██╗ ██║███████╗                              
-                  ██║  ██║██║╚██╗██║╚════██║                              
-                  ██████╔╝██║ ╚████║███████║                              
-                  ╚═════╝ ╚═╝  ╚═══╝╚══════╝                              
+██║     ██╔══██║   ██║   ██╔══██║██║     ██║    ╚██╔╝  ╚════██║██║╚██╔╝██║   ⠀⠀⢀⣀⣤⡤⠤⠤⠤⣤⣄⣀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+╚██████╗██║  ██║   ██║   ██║  ██║╚██████╗███████╗██║   ███████║██║ ╚═╝ ██║   ⠀⠀⠀⠀⠀⣠⡶⠞⠛⠛⠛⠛⠛⠛⠷⣦⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+ ╚═════╝╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝ ╚═════╝╚══════╝╚═╝   ╚══════╝╚═╝     ╚═╝   ⠀⠀⠀⣴⠟⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⢿⣆⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+                  ██████╗ ███╗   ██╗███████╗                              ⠀⠀⣼⠃⠀⠀⠀⢀⣴⣿⣶⣄⠀⠀⠀⠀⠈⢿⡄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+                  ██╔══██╗████╗  ██║██╔════╝                              ⠀⣸⠃⠀⠀⠀⠀⣸⣿⣿⣿⣿⡇⠀⠀⠀⠀⠈⣷⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+                  ██║  ██║██╔██╗ ██║███████╗                              ⠀⣿⠀⠀⠀⠀⠀⣿⣿⣿⣿⣿⣿⠀⠀⠀⠀⠀⢸⡇⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+                  ██║  ██║██║╚██╗██║╚════██║                              ⢸⡇⠀⠀⠀⠀⠀⣿⣿⣿⣿⣿⣿⠀⠀⠀⠀⠀⠈⣧⣀⣤⡤⠤⠤⠤⠤⢤⣄⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+                  ██████╔╝██║ ╚████║███████║                              ⢸⡇⠀⠀⠀⠀⠀⢹⣿⣿⣿⣿⡇⠀⠀⠀⠀⠀⢠⣿⠋⠁⠀⠀⠀⠀⠀⠀⠀⠙⢷⡄⠀⠀⠀⠀⠀⠀⠀⠀⠀
+                  ╚═════╝ ╚═╝  ╚═══╝╚══════╝                              ⢸⡇⠀⠀⠀⠀⠀⠀⠻⣿⣿⠟⠀⠀⠀⠀⠀⢀⣾⠃⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⢿⡄⠀⠀⠀⠀⠀⠀⠀⠀
+                                                                          ⢸⣇⠀⠀⠀⠀⠀⠀⠀⠈⠁⠀⠀⠀⠀⠀⠀⣼⣏⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣸⣷⡀⠀⠀⠀⠀⠀⠀⠀
+                                                                          ⠈⣿⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣾⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⢻⣇⠀⠀⠀⠀⠀⠀⠀
+                                                                          ⠀⠈⢷⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣴⠟⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠹⣧⠀⠀⠀⠀⠀⠀
+                                                                          ⠀⠀⠈⠻⣦⣄⣀⠀⠀⠀⢀⣠⣶⠟⠋⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠹⣧⠀⠀⠀⠀⠀
+                                                                          ⠀⠀⠀⠀⠈⠉⠛⠛⠛⠛⠛⠉⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠹⣧⡀⠀⠀⠀
+                                                                          ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠻⣦⣄⣀
     """
     
     console.print(banner, style="bold cyan")
     console.print("                [yellow]Toolkit avançado de pentest DNS[/]")
     console.print("                [dim white]Versão 1.0 - Por Petronilha[/]\n")
 
-
-def test_tor_connection():
-    import requests
-    import sys
-    
-    try:
-        proxies = {
-            'http': 'socks5://127.0.0.1:9050',
-            'https': 'socks5://127.0.0.1:9050'
-        }
-        response = requests.get('https://check.torproject.org', proxies=proxies)
-        if "Congratulations" in response.text:
-            console.print("[green]✓ Conexão Tor funcionando![/]")
-            return True
-        else:
-            console.print("[red]✗ Tor não está funcionando corretamente[/]")
-            return False
-    except Exception as e:
-        console.print(f"[red]✗ Erro ao conectar ao Tor: {e}[/]")
-        return False
-
-def diagnose_tor_connection():
-    """Diagnóstico da conexão Tor"""
-    import subprocess
-    import socket
-    
-    console.print("\n[yellow]🔍 Diagnóstico da conexão Tor[/]")
-    
-    # 1. Verifica se o serviço Tor está rodando
-    try:
-        # Tenta diferentes formas de verificar o serviço
-        methods = [
-            ['systemctl', 'is-active', 'tor'],
-            ['service', 'tor', 'status'],
-            ['pgrep', '-f', 'tor']
-        ]
-        
-        service_running = False
-        for method in methods:
-            try:
-                result = subprocess.run(method, capture_output=True, text=True)
-                if method[0] == 'systemctl' and result.stdout.strip() == 'active':
-                    service_running = True
-                    break
-                elif method[0] == 'service' and 'running' in result.stdout.lower():
-                    service_running = True
-                    break
-                elif method[0] == 'pgrep' and result.stdout.strip():
-                    service_running = True
-                    break
-            except:
-                continue
-        
-        if service_running:
-            console.print("✓ Serviço Tor está rodando")
-        else:
-            console.print("✗ Serviço Tor não está rodando corretamente")
-            console.print("  [yellow]Tente: sudo service tor start[/]")
-    except Exception as e:
-        console.print(f"⚠ Não foi possível verificar o status do Tor: {e}")
-    
-    # 2. Verifica a porta 9050
-    try:
-        test_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        test_socket.settimeout(2)
-        test_socket.connect(("127.0.0.1", 9050))
-        test_socket.close()
-        console.print("✓ Porta 9050 está aberta")
-    except Exception as e:
-        console.print(f"✗ Não foi possível conectar na porta 9050: {e}")
-        console.print("  [yellow]Verifique se o Tor está configurado para usar esta porta[/]")
-    
-    # 3. Teste de conexão com curl (se disponível)
-    try:
-        result = subprocess.run(['curl', '--socks5', '127.0.0.1:9050', 
-                               'https://check.torproject.org/api/ip'], 
-                              capture_output=True, text=True)
-        if result.returncode == 0 and "IsTor" in result.stdout:
-            console.print("✓ Tor está funcionando corretamente (teste com curl)")
-        else:
-            console.print("✗ Tor não está funcionando (teste com curl)")
-    except FileNotFoundError:
-        console.print("⚠ curl não está instalado - pulando teste")
-    except Exception as e:
-        console.print(f"⚠ Não foi possível testar com curl: {e}")
-    
-    # 4. Teste com Python requests
-    try:
-        import requests
-        proxies = {
-            'http': 'socks5h://127.0.0.1:9050',
-            'https': 'socks5h://127.0.0.1:9050'
-        }
-        response = requests.get('https://check.torproject.org/api/ip', 
-                              proxies=proxies, timeout=10)
-        data = response.json()
-        if data.get('IsTor', False):
-            console.print(f"✓ Tor funcionando! IP: {data.get('IP')}")
-        else:
-            console.print("✗ Conexão não está passando pelo Tor")
-    except Exception as e:
-        console.print(f"✗ Erro no teste com requests: {e}")
-    
-    console.print("\n[bold]Soluções comuns:[/]")
-    console.print("1. Verificar se o Tor está instalado: [yellow]sudo apt install tor[/]")
-    console.print("2. Iniciar o serviço: [yellow]sudo service tor start[/]")
-    console.print("3. Verificar configuração em: [yellow]/etc/tor/torrc[/]")
-    console.print("4. Verificar logs: [yellow]sudo journalctl -u tor[/]")
-    console.print("")
-
-@app.command()
-def test_proxy(
-    proxy: Annotated[str, typer.Option(help="Proxy SOCKS5/HTTP (ex: socks5://127.0.0.1:9050)")] = "socks5://127.0.0.1:9050",
-):
-    """Testa a conexão com o proxy Tor e resolução DNS"""
-    console.print("[yellow]Testando conexão com o proxy...[/]")
-    
-    # Configurar proxy
-    proxy_manager = ProxyManager()
-    proxy_manager.add_proxy(proxy)
-    proxy_manager.enabled = True
-    
-    try:
-        # Configura o socket
-        proxy_manager.setup_socket()
-        console.print("[green]✓ Proxy configurado com sucesso[/]")
-        
-        # Testa resolução DNS
-        try:
-            import dns.resolver
-            answers = dns.resolver.resolve("example.com", "A")
-            console.print(f"[green]✓ Resolução DNS funcionando: {[str(rdata) for rdata in answers]}[/]")
-        except Exception as e:
-            console.print(f"[red]✗ Erro na resolução DNS: {e}[/]")
-        
-        # Testa conexão HTTP
-        try:
-            import requests
-            proxies = {
-                'http': proxy,
-                'https': proxy
-            }
-            response = requests.get('https://check.torproject.org/api/ip', proxies=proxies, timeout=10)
-            data = response.json()
-            console.print(f"[green]✓ Conexão via Tor OK. IP: {data.get('IP')}[/]")
-        except Exception as e:
-            console.print(f"[red]✗ Erro na conexão HTTP: {e}[/]")
-        
-    except Exception as e:
-        console.print(f"[red]✗ Erro ao configurar proxy: {e}[/]")
-    finally:
-        proxy_manager.reset_socket()
 
 def error_handler(func):
     """Decorator para tratamento de erros global"""
@@ -307,15 +160,12 @@ def enum(
     output: Annotated[Optional[str], typer.Option(help="Arquivo de output")] = None,
     format: Annotated[str, typer.Option(help="Formato do output (json, csv)")] = "json",
     verbose: Annotated[bool, typer.Option("--verbose", "-v", help="Modo verboso")] = False,
-    proxy: Annotated[Optional[str], typer.Option(help="Proxy SOCKS5/HTTP (ex: socks5://127.0.0.1:9050)")] = None,
     rate_limit: Annotated[float, typer.Option(help="Requisições por segundo")] = 10.0,
 ):
     """
     Enumeração avançada de subdomínios com múltiplos tipos de registro
     e detecção de wildcard.
     """
-    if proxy:
-        diagnose_tor_connection()
     if not validate_domain(domain):
         console.print("[red]Erro: Domínio inválido[/]")
         raise typer.Exit(1)
@@ -327,18 +177,6 @@ def enum(
     if not Path(wordlist).exists():
         console.print(f"[red]Erro: Wordlist não encontrada: {wordlist}[/]")
         raise typer.Exit(1)
-    
-    # Configurar proxy se especificado
-    proxy_manager = ProxyManager()
-    if proxy:
-        proxy_manager.add_proxy(proxy)
-        proxy_manager.enabled = True
-        try:
-            proxy_manager.setup_socket()
-        except ConnectionError as e:
-            console.print(f"[red]Erro: {e}[/]")
-            console.print("[yellow]Execute novamente com conexão Tor funcionando ou sem --proxy[/]")
-            raise typer.Exit(1)
     
     # Configurar rate limiter
     rate_limiter = RateLimiter(RateLimitConfig(requests_per_second=rate_limit))
@@ -355,13 +193,11 @@ def enum(
         
         if verbose:
             console.print(f"[dim]Carregados {len(subs)} subdomínios para teste[/]")
-            if proxy:
-                console.print(f"[dim]Usando proxy: {proxy}[/]")
             console.print(f"[dim]Rate limit: {rate_limit} req/s[/]")
         
         types = ["A", "AAAA", "MX", "TXT", "PTR"]
         results = asyncio.run(enum_subdomains(
-            domain, subs, types, nameserver, workers, proxy_manager, rate_limiter
+            domain, subs, types, nameserver, workers, rate_limiter
         ))
         
         progress.update(task, completed=True)
