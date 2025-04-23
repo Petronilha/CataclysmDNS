@@ -30,6 +30,28 @@ console = Console()
 logger = setup_logger("cli")
 
 
+def show_banner():
+    """Exibe o banner ASCII art da ferramenta"""
+    banner = r"""
+ ██████╗ █████╗ ████████╗ █████╗  ██████╗██╗  ██╗   ██╗███████╗███╗   ███╗
+██╔════╝██╔══██╗╚══██╔══╝██╔══██╗██╔════╝██║  ╚██╗ ██╔╝██╔════╝████╗ ████║
+██║     ███████║   ██║   ███████║██║     ██║   ╚████╔╝ ███████╗██╔████╔██║
+██║     ██╔══██║   ██║   ██╔══██║██║     ██║    ╚██╔╝  ╚════██║██║╚██╔╝██║
+╚██████╗██║  ██║   ██║   ██║  ██║╚██████╗███████╗██║   ███████║██║ ╚═╝ ██║
+ ╚═════╝╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝ ╚═════╝╚══════╝╚═╝   ╚══════╝╚═╝     ╚═╝
+                  ██████╗ ███╗   ██╗███████╗                              
+                  ██╔══██╗████╗  ██║██╔════╝                              
+                  ██║  ██║██╔██╗ ██║███████╗                              
+                  ██║  ██║██║╚██╗██║╚════██║                              
+                  ██████╔╝██║ ╚████║███████║                              
+                  ╚═════╝ ╚═╝  ╚═══╝╚══════╝                              
+    """
+    
+    console.print(banner, style="bold cyan")
+    console.print("                [yellow]Toolkit avançado de pentest DNS[/]")
+    console.print("                [dim white]Versão 1.0 - Por Petronilha[/]\n")
+
+
 def error_handler(func):
     """Decorator para tratamento de erros global"""
     @wraps(func)
@@ -118,7 +140,8 @@ def enum(
         task = progress.add_task(f"[cyan]Enumerando {domain}...", total=None)
         
         subs = [l.strip() for l in open(wordlist, encoding="utf-8") if l.strip()]
-        subs = generate_permutations(subs)
+        # Removido o limite de permutações
+        subs = generate_permutations(subs, limit_permutations=None)
         
         if verbose:
             console.print(f"[dim]Carregados {len(subs)} subdomínios para teste[/]")
@@ -260,6 +283,10 @@ def main(
     quiet: Annotated[bool, typer.Option("--quiet", "-q", help="Modo silencioso")] = False,
 ):
     """CataclysmDNS - Ferramenta avançada de pentest DNS"""
+    # Mostra o banner apenas se não estiver no modo silencioso
+    if not quiet:
+        show_banner()
+    
     if debug:
         import logging
         logging.getLogger().setLevel(logging.DEBUG)

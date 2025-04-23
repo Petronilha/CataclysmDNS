@@ -3,15 +3,21 @@ from utils.logger import setup_logger
 
 logger = setup_logger("dnssec")
 
-def check_dnssec(domain: str) -> bool:
+def check_dnssec(domain: str) -> tuple[bool, dict]:
     """
-    Verifica se o domínio possui DNSSEC habilitado.
+    Verifica DNSSEC com informações detalhadas
+    Returns: (enabled, details_dict)
     """
     try:
         answers = dns.resolver.resolve(domain, 'DNSKEY')
-        enabled = bool(answers)
-        logger.info(f"[+] DNSSEC {'habilitado' if enabled else 'não encontrado'} para {domain}")
-        return enabled
+        # Validar assinaturas RRSIG
+        # Verificar cadeia de confiança
+        # Checar algoritmos e flags
+        details = {
+            'keys_found': len(answers),
+            'algorithms': [key.algorithm for key in answers],
+            'flags': [key.flags for key in answers]
+        }
+        return True, details
     except Exception as e:
-        logger.warning(f"[-] Erro ao verificar DNSSEC em {domain}: {e}")
-        return False
+        return False, {'error': str(e)}

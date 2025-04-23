@@ -163,10 +163,10 @@ def generate_permutations(
     suffixes: Optional[List[str]] = None,
     prefixes: Optional[List[str]] = None,
     prefix_numbers: int = 3,
-    max_permutations: int = 100000
+    limit_permutations: Optional[int] = None
 ) -> List[str]:
     """
-    Geração de permutações com limite para evitar explosão combinatória
+    Geração de permutações com opção de limite
     """
     suffixes = suffixes or ["dev", "test", "stage", "prod", "api", "admin"]
     prefixes = prefixes or ["vpn", "mail", "www", "app", "cloud"]
@@ -191,10 +191,12 @@ def generate_permutations(
             perms.add(f"{b}{i}")
             perms.add(f"{b}-{i}")
     
-    # Limita o número de permutações
-    if len(perms) > max_permutations:
-        logger.warning(f"Limitando permutações de {len(perms)} para {max_permutations}")
-        perms = set(list(perms)[:max_permutations])
+    # Aplica limite se especificado
+    if limit_permutations and len(perms) > limit_permutations:
+        logger.warning(f"Limitando permutações de {len(perms)} para {limit_permutations}")
+        perms = set(list(perms)[:limit_permutations])
+    else:
+        logger.info(f"Processando {len(perms)} permutações")
     
     return sorted(perms)
 

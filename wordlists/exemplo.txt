@@ -1,0 +1,5 @@
+n8n
+vps
+api
+evolution
+mail
