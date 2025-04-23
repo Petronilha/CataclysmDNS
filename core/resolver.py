@@ -1,43 +1,100 @@
+import dns.asyncresolver
 import dns.resolver
 import asyncio
+import random
+import string
 from utils.logger import setup_logger
 
 logger = setup_logger("resolver")
 
-async def resolve_subdomain(sub: str, domain: str) -> str | None:
+
+def resolve_record(name: str, rdtype: str, resolver: dns.resolver.Resolver | None = None) -> list[str]:
     """
-    Tenta resolver sub.domain e retorna o IP, ou None em caso de falha.
+    Resolve um registro DNS do tipo `rdtype` (A, AAAA, MX, TXT, PTR, etc.)
+    e retorna a lista de valores como strings.
+    """
+    resolver = resolver or dns.resolver.Resolver()
+    try:
+        answers = resolver.resolve(name, rdtype)
+        return [rdata.to_text() for rdata in answers]
+    except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN):
+        return []
+    except Exception as e:
+        logger.debug(f"Erro ao resolver {name} {rdtype}: {e}")
+        return []
+
+
+async def resolve_subdomain_async(
+    sub: str,
+    domain: str,
+    types: list[str],
+    resolver: dns.asyncresolver.Resolver,
+    semaphore: asyncio.Semaphore
+) -> dict[str, dict[str, list[str]]]:
+    """
+    Resolve `sub.domain` para cada tipo em `types` de forma assíncrona.
+    Retorna dict {fqdn: {rdtype: [valores]}} apenas para registros encontrados.
     """
     fqdn = f"{sub}.{domain}"
-    try:
-        answers = dns.resolver.resolve(fqdn, "A")
-        ips = [rdata.address for rdata in answers]
-        return ",".join(ips)
-    except Exception:
-        return None
+    async with semaphore:
+        result: dict[str, list[str]] = {}
+        for rd in types:
+            try:
+                answers = await resolver.resolve(fqdn, rd)
+                result[rd] = [rdata.to_text() for rdata in answers]
+            except Exception:
+                continue
 
-async def enum_subdomains(domain: str, subs: list[str], workers: int = 20) -> dict[str, str]:
-    """
-    Realiza enumeração paralela de subdomínios.
-    """
-    results: dict[str, str] = {}
-    sem = asyncio.Semaphore(workers)
+        if result:
+            logger.info(f"[+] {fqdn} -> {result}")
+            return {fqdn: result}
+        return {}
 
-    async def worker(sub):
-        async with sem:
-            ip = await resolve_subdomain(sub, domain)
-            if ip:
-                results[sub] = ip
-                logger.info(f"[+] {sub}.{domain} -> {ip}")
 
-    await asyncio.gather(*(worker(s) for s in subs))
-    return results
+async def enum_subdomains(
+    domain: str,
+    subs: list[str],
+    types: list[str],
+    nameserver: str | None = None,
+    workers: int = 20
+) -> dict[str, dict[str, list[str]]]:
+    """
+    Enumera `subs` de forma paralela no `domain`, testando todos os `types`.
+    Se `nameserver` for informado, usa-o via override.
+    """
+    if nameserver:
+        resolver = dns.asyncresolver.Resolver(configure=False)
+        resolver.nameservers = [nameserver]
+    else:
+        resolver = dns.asyncresolver.get_default_resolver()
 
-def detect_wildcard(domain: str) -> bool:
+    semaphore = asyncio.Semaphore(workers)
+    tasks = [
+        resolve_subdomain_async(sub, domain, types, resolver, semaphore)
+        for sub in subs
+    ]
+    results = await asyncio.gather(*tasks)
+    combined: dict[str, dict[str, list[str]]] = {}
+    for r in results:
+        combined.update(r)
+    return combined
+
+
+def generate_permutations(
+    base: list[str],
+    suffixes: list[str] = None,
+    prefix_numbers: int = 3
+) -> list[str]:
     """
-    Verifica se há wildcard DNS criando um subdomínio aleatório.
+    Cria variações de `base` adicionando:
+    - Sufixos comuns (e.g., '-dev', '-test', '-stage')
+    - Prefixos numéricos de até `prefix_numbers`
     """
-    import random, string
-    rnd = "".join(random.choices(string.ascii_lowercase + string.digits, k=10))
-    ip = dns.resolver.resolve(f"{rnd}.{domain}", "A", raise_on_no_answer=False)
-    return bool(ip)
+    suffixes = suffixes or ["dev", "test", "stage"]
+    perms = set(base)
+    for b in base:
+        for suf in suffixes:
+            perms.add(f"{b}-{suf}")
+        for i in range(1, prefix_numbers + 1):
+            perms.add(f"{b}{i}")
+    return sorted(perms)
