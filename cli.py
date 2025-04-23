@@ -57,6 +57,27 @@ def show_banner():
     console.print("                [dim white]Versão 1.0 - Por Petronilha[/]\n")
 
 
+def test_tor_connection():
+    import requests
+    import sys
+    
+    try:
+        proxies = {
+            'http': 'socks5://127.0.0.1:9050',
+            'https': 'socks5://127.0.0.1:9050'
+        }
+        response = requests.get('https://check.torproject.org', proxies=proxies)
+        if "Congratulations" in response.text:
+            console.print("[green]✓ Conexão Tor funcionando![/]")
+            return True
+        else:
+            console.print("[red]✗ Tor não está funcionando corretamente[/]")
+            return False
+    except Exception as e:
+        console.print(f"[red]✗ Erro ao conectar ao Tor: {e}[/]")
+        return False
+
+
 def error_handler(func):
     """Decorator para tratamento de erros global"""
     @wraps(func)
@@ -162,6 +183,10 @@ def enum(
     Enumeração avançada de subdomínios com múltiplos tipos de registro
     e detecção de wildcard.
     """
+    if proxy:
+        if not test_tor_connection():
+            console.print("[red]Abortando: verifique sua conexão Tor[/]")
+            raise typer.Exit(1)
     if not validate_domain(domain):
         console.print("[red]Erro: Domínio inválido[/]")
         raise typer.Exit(1)
