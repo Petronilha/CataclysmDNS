@@ -90,6 +90,13 @@ class ProxyManager:
         
         proxy = self.get_next_proxy()
         if proxy.proxy_type == "socks5":
+            # Força TUDO a passar pelo Tor
+            socks.set_default_proxy(socks.SOCKS5, proxy.host, proxy.port)
+            socket.socket = socks.socksocket
+          
+            # Importante: força resolução DNS pelo proxy
+            socket.getaddrinfo = self._proxy_getaddrinfo
+            
             # Espera um pouco para o Tor inicializar completamente
             time.sleep(2)
             
@@ -127,6 +134,11 @@ class ProxyManager:
                 logger.error(f"✗ Erro ao configurar proxy: {e}")
                 self.reset_socket()
                 raise
+    
+    def _proxy_getaddrinfo(self, *args, **kwargs):
+      # Força a resolução pelo proxy
+      return [(socket.AF_INET, socket.SOCK_STREAM, 6, '', (args[0], args[1]))]
+
     
     def reset_socket(self):
         """Reseta o socket para não usar proxy"""
