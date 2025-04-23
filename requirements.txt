@@ -6,4 +6,4 @@ typing-extensions>=4.8.0
 backoff>=2.2.1
 cachetools>=5.3.2
 pysocks>=1.7.1
-requests>=2.31.0
+requests[socks]>=2.31.0

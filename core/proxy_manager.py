@@ -24,7 +24,7 @@ class ProxyManager:
         self.proxies: List[ProxyConfig] = []
         self.current_index = 0
         self.enabled = False
-        self.original_getaddrinfo = socket.getaddrinfo
+        self.original_socket = socket.socket
     
     def add_proxy(self, proxy_url: str):
         """Adiciona um proxy à lista (socks5://user:pass@host:port)"""
@@ -57,24 +57,21 @@ class ProxyManager:
         
         proxy = self.get_next_proxy()
         if proxy.proxy_type == "socks5":
+            # Configuração do socks.setdefaultproxy
             socks.set_default_proxy(
                 socks.SOCKS5, 
                 proxy.host, 
                 proxy.port,
                 username=proxy.username,
                 password=proxy.password,
-                rdns=True  # Importante: resolver DNS através do proxy
+                rdns=True  # Importante: resolve DNS através do proxy
             )
-            socket.socket = socks.socksocket
             
-            # Substitui getaddrinfo para usar o proxy
-            def proxy_getaddrinfo(*args):
-                return [(socket.AF_INET, socket.SOCK_STREAM, 6, '', (args[0], args[1]))]
-            socket.getaddrinfo = proxy_getaddrinfo
+            # Substitui o socket.socket pelo socks.socksocket
+            socket.socket = socks.socksocket
             
             logger.info(f"Usando proxy SOCKS5: {proxy.host}:{proxy.port}")
     
     def reset_socket(self):
         """Reseta o socket para não usar proxy"""
-        socket.socket = socket._socket
-        socket.getaddrinfo = self.original_getaddrinfo
+        socket.socket = self.original_socket
