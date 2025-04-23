@@ -25,6 +25,15 @@ response_cache = TTLCache(maxsize=10000, ttl=CACHE_TTL)
 # Cache de configuração de resolvers
 resolver_cache = TTLCache(maxsize=100, ttl=3600)  # 1 hora
 
+def configure_dns_for_proxy(resolver: dns.asyncresolver.Resolver, proxy_manager: Optional[ProxyManager] = None):
+    """Configura o resolver DNS para trabalhar com proxy"""
+    if proxy_manager and proxy_manager.enabled:
+        # Força o uso de TCP para DNS quando usando proxy
+        resolver.use_tcp = True
+        # Aumenta o timeout para compensar a latência do Tor
+        resolver.timeout = 10.0
+        resolver.lifetime = 30.0
+    return resolver
 
 class DNSResolverPool:
     """Pool de resolvers DNS com rotação e suporte a proxy"""
@@ -36,37 +45,25 @@ class DNSResolverPool:
         self.index = 0
         self.proxy_manager = proxy_manager
         
-        # Lista expandida de nameservers públicos
+        # Lista expandida de nameservers públicos que funcionam bem com Tor
         self.public_nameservers = [
-            # Cloudflare
+            # Cloudflare (funciona bem com Tor)
             "1.1.1.1", "1.0.0.1",
-            # Google
+            # Google DNS (geralmente funciona)
             "8.8.8.8", "8.8.4.4",
-            # Quad9
-            "9.9.9.9", "149.112.112.112",
             # OpenDNS
             "208.67.222.222", "208.67.220.220",
-            # Comodo
-            "8.26.56.26", "8.20.247.20",
-            # AdGuard
-            "94.140.14.14", "94.140.15.15",
-            # CleanBrowsing
-            "185.228.168.9", "185.228.169.9",
-            # Alternate DNS
-            "76.76.19.19", "76.223.122.150"
         ]
         
         nameservers = nameservers or self.public_nameservers
         
         for i in range(size):
-            if self.proxy_manager and self.proxy_manager.enabled:
-                self.proxy_manager.setup_socket()
-            
             resolver = dns.asyncresolver.Resolver(configure=False)
-            # Rotaciona entre os nameservers disponíveis
             resolver.nameservers = [nameservers[i % len(nameservers)]]
-            resolver.timeout = 2.0
-            resolver.lifetime = 5.0
+            
+            # Configura o resolver para trabalhar com proxy
+            resolver = configure_dns_for_proxy(resolver, self.proxy_manager)
+            
             self.resolvers.append(resolver)
     
     def get_resolver(self) -> dns.asyncresolver.Resolver:

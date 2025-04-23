@@ -179,6 +179,7 @@ def enum(
     if proxy:
         proxy_manager.add_proxy(proxy)
         proxy_manager.enabled = True
+        proxy_manager.setup_socket()
     
     # Configurar rate limiter
     rate_limiter = RateLimiter(RateLimitConfig(requests_per_second=rate_limit))
