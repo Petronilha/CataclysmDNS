@@ -166,6 +166,48 @@ def diagnose_tor_connection():
     console.print("4. Verificar logs: [yellow]sudo journalctl -u tor[/]")
     console.print("")
 
+@app.command()
+def test_proxy(
+    proxy: Annotated[str, typer.Option(help="Proxy SOCKS5/HTTP (ex: socks5://127.0.0.1:9050)")] = "socks5://127.0.0.1:9050",
+):
+    """Testa a conexão com o proxy Tor e resolução DNS"""
+    console.print("[yellow]Testando conexão com o proxy...[/]")
+    
+    # Configurar proxy
+    proxy_manager = ProxyManager()
+    proxy_manager.add_proxy(proxy)
+    proxy_manager.enabled = True
+    
+    try:
+        # Configura o socket
+        proxy_manager.setup_socket()
+        console.print("[green]✓ Proxy configurado com sucesso[/]")
+        
+        # Testa resolução DNS
+        try:
+            import dns.resolver
+            answers = dns.resolver.resolve("example.com", "A")
+            console.print(f"[green]✓ Resolução DNS funcionando: {[str(rdata) for rdata in answers]}[/]")
+        except Exception as e:
+            console.print(f"[red]✗ Erro na resolução DNS: {e}[/]")
+        
+        # Testa conexão HTTP
+        try:
+            import requests
+            proxies = {
+                'http': proxy,
+                'https': proxy
+            }
+            response = requests.get('https://check.torproject.org/api/ip', proxies=proxies, timeout=10)
+            data = response.json()
+            console.print(f"[green]✓ Conexão via Tor OK. IP: {data.get('IP')}[/]")
+        except Exception as e:
+            console.print(f"[red]✗ Erro na conexão HTTP: {e}[/]")
+        
+    except Exception as e:
+        console.print(f"[red]✗ Erro ao configurar proxy: {e}[/]")
+    finally:
+        proxy_manager.reset_socket()
 
 def error_handler(func):
     """Decorator para tratamento de erros global"""

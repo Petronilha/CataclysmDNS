@@ -30,23 +30,18 @@ resolver_cache = TTLCache(maxsize=100, ttl=3600)  # 1 hora
 
 def setup_dns_over_tor():
     """Configura DNS para trabalhar com Tor"""
-    import dns.query
-    import dns.message
-    
     # Força o uso de TCP para DNS
+    dns.resolver.default_resolver = dns.resolver.Resolver(configure=False)
+    dns.resolver.default_resolver.use_edns = 0
+    dns.resolver.default_resolver.timeout = 10
+    dns.resolver.default_resolver.lifetime = 30
+    dns.resolver.default_resolver.port = 53
+    
+    # Força usar TCP ao invés de UDP (importante para Tor)
     dns.query.tcp = True
+    dns.query.udp = False
     
-    # Patch para DNS sobre SOCKS5
-    original_tcp_socket = socket.socket
-    
-    def socks_socket(*args, **kwargs):
-        sock = socks.socksocket(*args, **kwargs)
-        sock.set_proxy(socks.SOCKS5, "127.0.0.1", 9050)
-        return sock
-    
-    socket.socket = socks_socket
-    
-    return original_tcp_socket
+    return dns.resolver.default_resolver
 
 
 class DNSResolverPool:
@@ -73,7 +68,7 @@ class DNSResolverPool:
         
         # Se usando proxy, configura DNS sobre Tor
         if self.proxy_manager and self.proxy_manager.enabled:
-            self.original_socket = setup_dns_over_tor()
+            self.original_resolver = setup_dns_over_tor()
         
         for i in range(size):
             resolver = dns.asyncresolver.Resolver(configure=False)
@@ -81,8 +76,8 @@ class DNSResolverPool:
             resolver.nameservers = [nameservers[i % len(nameservers)]]
             resolver.timeout = 10.0  # Aumenta timeout para Tor
             resolver.lifetime = 30.0
-            resolver.use_tcp = True  # Força uso de TCP
-            resolver.use_edns = False  # Desabilita EDNS para melhor compatibilidade
+            resolver.use_edns = 0
+            resolver.port = 53
             
             self.resolvers.append(resolver)
     
@@ -104,9 +99,9 @@ class DNSResolverPool:
             resolver.nameservers = [self.public_nameservers[i % len(self.public_nameservers)]]
     
     def cleanup(self):
-        """Restaura o socket original"""
-        if hasattr(self, 'original_socket'):
-            socket.socket = self.original_socket
+        """Restaura o resolver original"""
+        if hasattr(self, 'original_resolver'):
+            dns.resolver.default_resolver = self.original_resolver
 
 
 async def resolve_subdomain_async_with_retry(

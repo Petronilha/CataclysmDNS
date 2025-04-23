@@ -68,7 +68,6 @@ class ProxyManager:
                 'https': f'socks5h://{proxy.host}:{proxy.port}'
             }
             
-            # Usa um site confiável para teste
             try:
                 response = requests.get('https://check.torproject.org/api/ip', 
                                       proxies=proxies, 
@@ -83,18 +82,7 @@ class ProxyManager:
                     return False
             except requests.exceptions.RequestException as e:
                 logger.warning(f"Falha no teste Tor, tentando alternativa: {e}")
-                # Tenta um site alternativo
-                try:
-                    response = requests.get('https://ipinfo.io/json', 
-                                          proxies=proxies, 
-                                          timeout=10)
-                    if response.status_code == 200:
-                        logger.info(f"✓ Proxy funcionando com IP: {response.json().get('ip')}")
-                        return True
-                except:
-                    pass
-                    
-            return False
+                return False
                 
         except Exception as e:
             logger.error(f"✗ Erro ao testar conexão Tor: {e}")
@@ -109,44 +97,37 @@ class ProxyManager:
         proxy = self.get_next_proxy()
         if proxy.proxy_type == "socks5":
             try:
-                # Primeiro verifica se o Tor está rodando
-                test_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                test_socket.settimeout(5)
-                try:
-                    test_socket.connect((proxy.host, proxy.port))
-                    test_socket.close()
-                except Exception as e:
-                    raise ConnectionError(f"Não foi possível conectar ao Tor: {e}")
-                
-                # Salva as funções originais
+                # Salva o socket original
                 self.original_socket = socket.socket
-                self.original_getaddrinfo = socket.getaddrinfo
                 
-                # Configura o proxy sem testar ainda
+                # Cria um socket SOCKS5
+                def create_socks_socket(*args, **kwargs):
+                    sock = socks.socksocket(*args, **kwargs)
+                    sock.set_proxy(
+                        proxy_type=socks.SOCKS5,
+                        addr=proxy.host,
+                        port=proxy.port,
+                        rdns=True,
+                        username=proxy.username,
+                        password=proxy.password
+                    )
+                    return sock
+                
+                # Substitui o socket padrão
+                socket.socket = create_socks_socket
+                
+                # IMPORTANTE: Configura o default proxy para o dnspython
                 socks.set_default_proxy(
-                    socks.SOCKS5, 
-                    addr=proxy.host, 
+                    socks.SOCKS5,
+                    addr=proxy.host,
                     port=proxy.port,
-                    rdns=True,  # Força resolução DNS pelo proxy
+                    rdns=True,
                     username=proxy.username,
                     password=proxy.password
                 )
                 
-                # Substitui o socket
-                socket.socket = socks.socksocket
-                
-                # Função personalizada para getaddrinfo
-                def proxy_getaddrinfo(*args, **kwargs):
-                    # Força resolução de DNS pelo proxy
-                    return [(socket.AF_INET, socket.SOCK_STREAM, 6, '', (args[0], args[1]))]
-                
-                socket.getaddrinfo = proxy_getaddrinfo
-                
-                # Agora espera um pouco e testa a conexão
-                time.sleep(1)
-                
+                # Testa a conexão
                 if not self.test_tor_connection(proxy):
-                    self.reset_socket()
                     raise ConnectionError("Não foi possível conectar ao Tor")
                 
                 logger.info(f"✓ Proxy SOCKS5 configurado: {proxy.host}:{proxy.port}")
@@ -156,14 +137,9 @@ class ProxyManager:
                 self.reset_socket()
                 raise
     
-    def _proxy_getaddrinfo(self, *args, **kwargs):
-        """Força a resolução pelo proxy"""
-        return [(socket.AF_INET, socket.SOCK_STREAM, 6, '', (args[0], args[1]))]
-    
     def reset_socket(self):
         """Reseta o socket para não usar proxy"""
         if self.original_socket:
             socket.socket = self.original_socket
-        if self.original_getaddrinfo:
-            socket.getaddrinfo = self.original_getaddrinfo
+            socks.set_default_proxy()
         logger.info("Socket resetado para configuração original")
