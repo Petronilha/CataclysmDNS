@@ -98,3 +98,16 @@ def generate_permutations(
         for i in range(1, prefix_numbers + 1):
             perms.add(f"{b}{i}")
     return sorted(perms)
+
+
+def detect_wildcard(domain: str) -> bool:
+    """
+    Detecta se o domínio possui wildcard DNS criando e resolvendo um subdomínio aleatório.
+    Retorna True se qualquer IP for retornado.
+    """
+    rnd = "".join(random.choices(string.ascii_lowercase + string.digits, k=12))
+    try:
+        answers = dns.resolver.resolve(f"{rnd}.{domain}", "A", raise_on_no_answer=False)
+        return bool(answers)
+    except Exception:
+        return False
