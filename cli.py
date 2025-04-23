@@ -77,6 +77,50 @@ def test_tor_connection():
         console.print(f"[red]✗ Erro ao conectar ao Tor: {e}[/]")
         return False
 
+def diagnose_tor_connection():
+    """Diagnóstico da conexão Tor"""
+    import subprocess
+    
+    console.print("\n[yellow]🔍 Diagnóstico da conexão Tor[/]")
+    
+    # Verifica se o serviço Tor está rodando
+    try:
+        result = subprocess.run(['systemctl', 'status', 'tor'], 
+                              capture_output=True, text=True)
+        if "active (running)" in result.stdout:
+            console.print("✓ Serviço Tor está rodando")
+        else:
+            console.print("✗ Serviço Tor não está rodando corretamente")
+    except:
+        console.print("⚠ Não foi possível verificar o status do Tor")
+    
+    # Verifica a porta 9050
+    try:
+        import socket
+        test_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        test_socket.settimeout(2)
+        test_socket.connect(("127.0.0.1", 9050))
+        test_socket.close()
+        console.print("✓ Porta 9050 está aberta")
+    except:
+        console.print("✗ Não foi possível conectar na porta 9050")
+    
+    # Teste de conexão com curl
+    try:
+        result = subprocess.run(['curl', '--socks5', '127.0.0.1:9050', 
+                               'https://check.torproject.org/api/ip'], 
+                              capture_output=True, text=True)
+        if "IsTor" in result.stdout:
+            console.print("✓ Tor está funcionando corretamente")
+        else:
+            console.print("✗ Tor não está funcionando")
+    except:
+        console.print("⚠ Não foi possível testar com curl")
+    
+    console.print("")
+
+
+
 
 def error_handler(func):
     """Decorator para tratamento de erros global"""
@@ -184,9 +228,7 @@ def enum(
     e detecção de wildcard.
     """
     if proxy:
-        if not test_tor_connection():
-            console.print("[red]Abortando: verifique sua conexão Tor[/]")
-            raise typer.Exit(1)
+        diagnose_tor_connection()
     if not validate_domain(domain):
         console.print("[red]Erro: Domínio inválido[/]")
         raise typer.Exit(1)

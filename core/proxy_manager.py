@@ -1,5 +1,6 @@
 import socks
 import socket
+import time
 import random
 from typing import Optional, Dict, List, Tuple
 from dataclasses import dataclass
@@ -24,16 +25,17 @@ class ProxyManager:
         self.proxies: List[ProxyConfig] = []
         self.current_index = 0
         self.enabled = False
-        self.original_socket = socket.socket
+        self.original_socket = None
+        self.original_getaddrinfo = None
     
     def add_proxy(self, proxy_url: str):
         """Adiciona um proxy à lista (socks5://user:pass@host:port)"""
         try:
             parsed = urlparse(proxy_url)
             proxy = ProxyConfig(
-                host=parsed.hostname,
-                port=parsed.port,
-                proxy_type=parsed.scheme,
+                host=parsed.hostname or "127.0.0.1",
+                port=parsed.port or 9050,
+                proxy_type=parsed.scheme or "socks5",
                 username=parsed.username,
                 password=parsed.password
             )
@@ -50,44 +52,86 @@ class ProxyManager:
         self.current_index = (self.current_index + 1) % len(self.proxies)
         return proxy
     
+    def test_tor_connection(self, proxy: ProxyConfig) -> bool:
+        """Testa se o Tor está funcionando"""
+        try:
+            # Teste simples com socket
+            test_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            test_socket.settimeout(5)
+            test_socket.connect((proxy.host, proxy.port))
+            test_socket.close()
+            
+            # Teste com requests
+            proxies = {
+                'http': f'socks5h://{proxy.host}:{proxy.port}',
+                'https': f'socks5h://{proxy.host}:{proxy.port}'
+            }
+            
+            response = requests.get('https://check.torproject.org/api/ip', 
+                                  proxies=proxies, 
+                                  timeout=10)
+            
+            if response.json().get('IsTor', False):
+                logger.info(f"✓ Tor está funcionando. IP: {response.json().get('IP')}")
+                return True
+            else:
+                logger.error("✗ Não está usando Tor")
+                return False
+                
+        except Exception as e:
+            logger.error(f"✗ Erro ao testar conexão Tor: {e}")
+            return False
+    
     def setup_socket(self):
-          """Configura o socket para usar o proxy atual"""
-          if not self.enabled or not self.proxies:
-              return
-          
-          proxy = self.get_next_proxy()
-          if proxy.proxy_type == "socks5":
-              try:
-                  # Importante: definir o proxy antes de substituir o socket
-                  socks.set_default_proxy(
-                      socks.SOCKS5, 
-                      proxy.host, 
-                      proxy.port,
-                      username=proxy.username,
-                      password=proxy.password,
-                      rdns=True
-                  )
-                  
-                  # Salvar o socket original
-                  self.original_socket = socket.socket
-                  
-                  # Substituir o socket
-                  socket.socket = socks.socksocket
-                  
-                  # Teste de conexão
-                  test_socket = socks.socksocket()
-                  test_socket.settimeout(5)
-                  test_socket.connect((proxy.host, proxy.port))
-                  test_socket.close()
-                  
-                  logger.info(f"✓ Proxy SOCKS5 configurado: {proxy.host}:{proxy.port}")
-              except Exception as e:
-                  logger.error(f"✗ Erro ao configurar proxy: {e}")
-                  # Restaurar socket original em caso de erro
-                  if hasattr(self, 'original_socket'):
-                      socket.socket = self.original_socket
-                  raise
+        """Configura o socket para usar o proxy atual"""
+        if not self.enabled or not self.proxies:
+            logger.warning("Proxy não habilitado ou lista vazia")
+            return
+        
+        proxy = self.get_next_proxy()
+        if proxy.proxy_type == "socks5":
+            # Espera um pouco para o Tor inicializar completamente
+            time.sleep(2)
+            
+            # Testa a conexão primeiro
+            if not self.test_tor_connection(proxy):
+                raise ConnectionError("Não foi possível conectar ao Tor")
+            
+            try:
+                # Salva as funções originais
+                self.original_socket = socket.socket
+                self.original_getaddrinfo = socket.getaddrinfo
+                
+                # Configura o proxy
+                socks.set_default_proxy(
+                    socks.SOCKS5, 
+                    addr=proxy.host, 
+                    port=proxy.port,
+                    rdns=True,
+                    username=proxy.username,
+                    password=proxy.password
+                )
+                
+                # Substitui o socket
+                socket.socket = socks.socksocket
+                
+                # Função personalizada para getaddrinfo
+                def proxy_getaddrinfo(*args):
+                    # Força resolução de DNS pelo proxy
+                    return [(socket.AF_INET, socket.SOCK_STREAM, 6, '', (args[0], args[1]))]
+                
+                socket.getaddrinfo = proxy_getaddrinfo
+                
+                logger.info(f"✓ Proxy SOCKS5 configurado: {proxy.host}:{proxy.port}")
+            except Exception as e:
+                logger.error(f"✗ Erro ao configurar proxy: {e}")
+                self.reset_socket()
+                raise
     
     def reset_socket(self):
         """Reseta o socket para não usar proxy"""
-        socket.socket = self.original_socket
+        if self.original_socket:
+            socket.socket = self.original_socket
+        if self.original_getaddrinfo:
+            socket.getaddrinfo = self.original_getaddrinfo
+        logger.info("Socket resetado para configuração original")
