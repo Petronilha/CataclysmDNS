@@ -28,6 +28,9 @@ from core.dnssec_checker import check_dnssec
 from core.monitoring import monitor
 from core.rate_limiter import RateLimiter, RateLimitConfig
 from utils.logger import setup_logger
+from core.takeover_detector import SubdomainTakeoverDetector
+from utils.wordlist_loader import load_wordlist
+from core.passive_recon import PassiveRecon
 
 app = typer.Typer(help="CataclysmDNS — toolkit avançado de pentest DNS")
 console = Console()
@@ -356,6 +359,130 @@ def monitor_dns(
     
     monitor(domain, interval)
 
+@app.command()
+@error_handler
+def passive(
+    domain: Annotated[str, typer.Option(help="Domínio alvo")],
+    output: Annotated[Optional[str], typer.Option(help="Arquivo de output")] = None,
+    format: Annotated[str, typer.Option(help="Formato do output (json, csv, txt)")] = "json",
+    verbose: Annotated[bool, typer.Option("--verbose", "-v", help="Modo verboso")] = False,
+):
+    """
+    Realiza reconhecimento passivo de DNS usando múltiplas fontes
+    """
+    if not validate_domain(domain):
+        console.print("[red]Erro: Domínio inválido[/]")
+        raise typer.Exit(1)
+    
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console,
+    ) as progress:
+        task = progress.add_task(f"[cyan]Reconhecimento passivo em {domain}...", total=None)
+        
+        # Executar busca passiva
+        recon = PassiveRecon()
+        results = asyncio.run(recon.gather_subdomains(domain))
+        
+        progress.update(task, completed=True)
+    
+    # Exibir resultados
+    if results['subdomains']:
+        # Tabela com estatísticas por fonte
+        stats_table = Table(title="📊 Estatísticas por Fonte", show_header=True, header_style="bold blue")
+        stats_table.add_column("Fonte", style="cyan", width=20)
+        stats_table.add_column("Subdomínios", style="green", justify="right")
+        
+        # Adicionar uma linha para cada fonte
+        for source, count in results['stats']['sources'].items():
+            stats_table.add_row(source, str(count) if count > 0 else "-")
+        
+        console.print()
+        console.print(stats_table)
+        console.print()
+        
+        # Tabela com subdomínios
+        sub_table = Table(title="🔍 Subdomínios Encontrados", show_header=True, header_style="bold green")
+        sub_table.add_column("#", style="dim", width=6)
+        sub_table.add_column("Subdomínio", style="green")
+        
+        for i, sub in enumerate(results['subdomains'], 1):
+            sub_table.add_row(str(i), sub)
+        
+        console.print(sub_table)
+        console.print()
+        console.print(f"[green]✓ Total: {len(results['subdomains'])} subdomínios únicos encontrados[/]")
+    else:
+        console.print("[yellow]Nenhum subdomínio encontrado[/]")
+    
+    if output:
+        save_results(results, format, output)
+
+@app.command()
+@error_handler
+def takeover(
+    domain: Annotated[str, typer.Option(help="Domínio alvo")],
+    wordlist: Annotated[str, typer.Option(help="Wordlist de subdomínios")] = "wordlists/subdomains.txt",
+    output: Annotated[Optional[str], typer.Option(help="Arquivo de output")] = None,
+    workers: Annotated[int, typer.Option(help="Workers paralelos")] = 10,
+    verbose: Annotated[bool, typer.Option("--verbose", "-v", help="Modo verboso")] = False,
+):
+    """
+    Detecta vulnerabilidades de subdomain takeover
+    """
+    if not validate_domain(domain):
+        console.print("[red]Erro: Domínio inválido[/]")
+        raise typer.Exit(1)
+    
+    if not Path(wordlist).exists():
+        console.print(f"[red]Erro: Wordlist não encontrada: {wordlist}[/]")
+        raise typer.Exit(1)
+    
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console,
+    ) as progress:
+        task = progress.add_task(f"[cyan]Detectando takeover em {domain}...", total=None)
+        
+        # Carregar subdomínios
+        subs = load_wordlist(wordlist)
+        subdomains = [f"{sub}.{domain}" for sub in subs]
+        
+        if verbose:
+            console.print(f"[dim]Verificando {len(subdomains)} subdomínios[/]")
+        
+        # Executar detecção
+        detector = SubdomainTakeoverDetector()
+        results = asyncio.run(detector.scan_subdomains(subdomains, workers))
+        
+        progress.update(task, completed=True)
+    
+    # Exibir resultados
+    if results:
+        table = Table(title="🚨 Vulnerabilidades de Subdomain Takeover", show_header=True, header_style="bold red")
+        table.add_column("Subdomínio", style="green", width=30)
+        table.add_column("Serviço", style="cyan", width=15)
+        table.add_column("CNAME", style="yellow", width=30)
+        table.add_column("Recomendação", style="white", width=50)
+        
+        for result in results:
+            table.add_row(
+                result['subdomain'],
+                result['service'],
+                result['cname'],
+                result['recommendation']
+            )
+        
+        console.print()
+        console.print(table)
+        console.print(f"\n[red]⚠️  {len(results)} vulnerabilidades encontradas![/]")
+    else:
+        console.print("[green]✓ Nenhuma vulnerabilidade de subdomain takeover encontrada[/]")
+    
+    if output:
+        save_results({'takeover_vulnerabilities': results}, 'json', output)
 
 @app.callback()
 def main(
