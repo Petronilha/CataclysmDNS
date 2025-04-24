@@ -366,6 +366,7 @@ def passive(
     output: Annotated[Optional[str], typer.Option(help="Arquivo de output")] = None,
     format: Annotated[str, typer.Option(help="Formato do output (json, csv, txt)")] = "json",
     verbose: Annotated[bool, typer.Option("--verbose", "-v", help="Modo verboso")] = False,
+    debug: Annotated[bool, typer.Option("--debug", help="Salvar HTML para análise")] = False,
 ):
     """
     Realiza reconhecimento passivo de DNS usando múltiplas fontes
@@ -382,7 +383,7 @@ def passive(
         task = progress.add_task(f"[cyan]Reconhecimento passivo em {domain}...", total=None)
         
         # Executar busca passiva
-        recon = PassiveRecon()
+        recon = PassiveRecon(debug=debug)
         results = asyncio.run(recon.gather_subdomains(domain))
         
         progress.update(task, completed=True)
