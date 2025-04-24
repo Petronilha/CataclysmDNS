@@ -7,10 +7,12 @@ from datetime import datetime
 import ssl
 import certifi
 from bs4 import BeautifulSoup
+from rich.console import Console
 from utils.logger import setup_logger
 from config import config
 
 logger = setup_logger("passive_recon")
+console = Console()
 
 class PassiveRecon:
     """
@@ -70,53 +72,81 @@ class PassiveRecon:
             logger.error(f"Erro na requisição para {url}: {e}")
             return None, None
     
-    async def search_urlscan(self, domain: str) -> Set[str]:
+    async def search_crtsh(self, domain: str) -> Set[str]:
         """
-        Busca usando URLScan.io - API opcional para mais resultados
-        """
-        api_key = self.api_configs.get('urlscan', {}).get('key')
-        
-        if api_key:
-            return await self._search_urlscan_api(domain, api_key)
-        else:
-            return await self._search_urlscan_web(domain)
-    
-    async def _search_urlscan_api(self, domain: str, api_key: str) -> Set[str]:
-        """
-        Busca usando API do URLScan (com key)
+        Busca em Certificate Transparency logs via crt.sh
         """
         try:
-            url = f"https://urlscan.io/api/v1/search/?q=domain:{domain}"
-            headers = {
-                **self.headers,
-                'API-Key': api_key
-            }
+            url = f"https://crt.sh/?q=%.{domain}&output=json"
             
-            response_text, status = await self._make_request(url, headers=headers)
-            
-            if response_text and status == 200:
-                data = json.loads(response_text)
-                subdomains = set()
-                
-                for result in data.get('results', []):
-                    page = result.get('page', {})
-                    subdomain = page.get('domain', '')
-                    if subdomain.endswith(domain):
-                        subdomains.add(subdomain.lower())
-                
-                logger.info(f"[URLScan API] Encontrados {len(subdomains)} subdomínios")
-                return subdomains
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers=self.headers, timeout=self.timeout, ssl=self.ssl_context) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        subdomains = set()
+                        
+                        for entry in data:
+                            name_value = entry.get('name_value', '')
+                            if name_value:
+                                # Extrair todos os domínios do certificado
+                                names = name_value.split('\n')
+                                for name in names:
+                                    if name.endswith(domain) and not name.startswith('*'):
+                                        subdomains.add(name.lower())
+                        
+                        # Mostra apenas o resumo
+                        count = len(subdomains)
+                        if count > 0:
+                            console.print(f"[green][+][/green] [crt.sh] {count} subdomínios encontrados")
+                        else:
+                            console.print(f"[yellow][-][/yellow] [crt.sh] Nenhum subdomínio encontrado")
+                        
+                        return subdomains
         except Exception as e:
-            logger.error(f"Erro ao consultar URLScan API: {e}")
+            logger.error(f"Erro ao consultar crt.sh: {e}")
+            console.print(f"[red][!][/red] [crt.sh] Erro ao consultar")
         
         return set()
     
-    async def _search_urlscan_web(self, domain: str) -> Set[str]:
+    async def search_hackertarget(self, domain: str) -> Set[str]:
         """
-        Busca usando URLScan web (sem API key)
+        Busca usando a API do HackerTarget
         """
         try:
-            url = f"https://urlscan.io/api/v1/search/?q=domain:{domain}"
+            url = f"https://api.hackertarget.com/hostsearch/?q={domain}"
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers=self.headers, timeout=self.timeout) as response:
+                    if response.status == 200:
+                        text = await response.text()
+                        subdomains = set()
+                        
+                        for line in text.split('\n'):
+                            if ',' in line:
+                                subdomain = line.split(',')[0]
+                                if subdomain.endswith(domain):
+                                    subdomains.add(subdomain.lower())
+                        
+                        # Mostra apenas o resumo
+                        count = len(subdomains)
+                        if count > 0:
+                            console.print(f"[green][+][/green] [HackerTarget] {count} subdomínios encontrados")
+                        else:
+                            console.print(f"[yellow][-][/yellow] [HackerTarget] Nenhum subdomínio encontrado")
+                        
+                        return subdomains
+        except Exception as e:
+            logger.error(f"Erro ao consultar HackerTarget: {e}")
+            console.print(f"[red][!][/red] [HackerTarget] Erro ao consultar")
+        
+        return set()
+    
+    async def search_alienvault(self, domain: str) -> Set[str]:
+        """
+        Busca usando AlienVault OTX
+        """
+        try:
+            url = f"https://otx.alienvault.com/api/v1/indicators/domain/{domain}/passive_dns"
             
             response_text, status = await self._make_request(url)
             
@@ -124,39 +154,41 @@ class PassiveRecon:
                 data = json.loads(response_text)
                 subdomains = set()
                 
-                for result in data.get('results', []):
-                    page = result.get('page', {})
-                    subdomain = page.get('domain', '')
-                    if subdomain.endswith(domain):
-                        subdomains.add(subdomain.lower())
+                for entry in data.get('passive_dns', []):
+                    hostname = entry.get('hostname', '')
+                    if hostname.endswith(domain):
+                        subdomains.add(hostname.lower())
                 
-                logger.info(f"[URLScan Web] Encontrados {len(subdomains)} subdomínios")
+                # Mostra apenas o resumo
+                count = len(subdomains)
+                if count > 0:
+                    console.print(f"[green][+][/green] [AlienVault] {count} subdomínios encontrados")
+                else:
+                    console.print(f"[yellow][-][/yellow] [AlienVault] Nenhum subdomínio encontrado")
+                
                 return subdomains
         except Exception as e:
-            logger.error(f"Erro ao consultar URLScan Web: {e}")
+            logger.error(f"Erro ao consultar AlienVault: {e}")
+            console.print(f"[red][!][/red] [AlienVault] Erro ao consultar")
         
         return set()
     
-    async def search_dnsdumpster(self, domain: str) -> Set[str]:
+    async def search_virustotal(self, domain: str, api_key: Optional[str] = None) -> Set[str]:
         """
-        Busca usando DNS Dumpster - API quando disponível
+        Busca usando VirusTotal
         """
-        api_key = self.api_configs.get('dnsdumpster', {}).get('key')
+        api_key = api_key or config.VIRUSTOTAL_API_KEY
         
-        if api_key:
-            return await self._search_dnsdumpster_api(domain, api_key)
-        else:
-            return await self._search_dnsdumpster_web(domain)
-    
-    async def _search_dnsdumpster_api(self, domain: str, api_key: str) -> Set[str]:
-        """
-        Busca usando API do DNSDumpster (com key)
-        """
+        if not api_key:
+            logger.info("[VirusTotal] Pulando - API key não fornecida")
+            console.print(f"[yellow][-][/yellow] [VirusTotal] API key não fornecida")
+            return set()
+        
         try:
-            url = f"https://api.dnsdumpster.com/domain/{domain}"
+            url = f"https://www.virustotal.com/api/v3/domains/{domain}/subdomains"
             headers = {
                 **self.headers,
-                'X-API-Key': api_key
+                'x-apikey': api_key
             }
             
             response_text, status = await self._make_request(url, headers=headers)
@@ -165,24 +197,104 @@ class PassiveRecon:
                 data = json.loads(response_text)
                 subdomains = set()
                 
-                # Processar diferentes tipos de registros DNS
-                for record_type in ['dns_records', 'host_records', 'txt_records']:
-                    if record_type in data:
-                        for record in data[record_type]:
-                            domain_name = record.get('domain', '')
-                            if domain_name.endswith(domain):
-                                subdomains.add(domain_name.lower())
+                for item in data.get('data', []):
+                    subdomain = item.get('id', '')
+                    if subdomain.endswith(domain):
+                        subdomains.add(subdomain.lower())
                 
-                logger.info(f"[DNSDumpster API] Encontrados {len(subdomains)} subdomínios")
+                # Mostra apenas o resumo
+                count = len(subdomains)
+                if count > 0:
+                    console.print(f"[green][+][/green] [VirusTotal] {count} subdomínios encontrados")
+                else:
+                    console.print(f"[yellow][-][/yellow] [VirusTotal] Nenhum subdomínio encontrado")
+                
                 return subdomains
         except Exception as e:
-            logger.error(f"Erro ao consultar DNSDumpster API: {e}")
+            logger.error(f"Erro ao consultar VirusTotal: {e}")
+            console.print(f"[red][!][/red] [VirusTotal] Erro ao consultar")
         
         return set()
     
-    async def _search_dnsdumpster_web(self, domain: str) -> Set[str]:
+    async def search_wayback(self, domain: str) -> Set[str]:
         """
-        Busca usando DNS Dumpster web (sem API key)
+        Busca usando Wayback Machine
+        """
+        try:
+            url = f"http://web.archive.org/cdx/search/cdx?url=*.{domain}&output=json&fl=original&collapse=urlkey"
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers=self.headers, timeout=self.timeout) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        subdomains = set()
+                        
+                        for entry in data[1:]:  # Pula o header
+                            if entry:
+                                url = entry[0]
+                                # Extrair subdomínio do URL
+                                match = re.search(r'https?://([^/]+)', url)
+                                if match:
+                                    subdomain = match.group(1)
+                                    if subdomain.endswith(domain):
+                                        subdomains.add(subdomain.lower())
+                        
+                        # Mostra apenas o resumo
+                        count = len(subdomains)
+                        if count > 0:
+                            console.print(f"[green][+][/green] [Wayback] {count} subdomínios encontrados")
+                        else:
+                            console.print(f"[yellow][-][/yellow] [Wayback] Nenhum subdomínio encontrado")
+                        
+                        return subdomains
+        except Exception as e:
+            logger.error(f"Erro ao consultar Wayback: {e}")
+            console.print(f"[red][!][/red] [Wayback] Erro ao consultar")
+        
+        return set()
+    
+    async def search_urlscan(self, domain: str) -> Set[str]:
+        """
+        Busca usando URLScan.io
+        """
+        api_key = self.api_configs.get('urlscan', {}).get('key')
+        
+        try:
+            url = f"https://urlscan.io/api/v1/search/?q=domain:{domain}"
+            headers = {**self.headers}
+            
+            if api_key:
+                headers['API-Key'] = api_key
+            
+            response_text, status = await self._make_request(url, headers=headers)
+            
+            if response_text and status == 200:
+                data = json.loads(response_text)
+                subdomains = set()
+                
+                for result in data.get('results', []):
+                    page = result.get('page', {})
+                    subdomain = page.get('domain', '')
+                    if subdomain.endswith(domain):
+                        subdomains.add(subdomain.lower())
+                
+                # Mostra apenas o resumo
+                count = len(subdomains)
+                if count > 0:
+                    console.print(f"[green][+][/green] [URLScan] {count} subdomínios encontrados")
+                else:
+                    console.print(f"[yellow][-][/yellow] [URLScan] Nenhum subdomínio encontrado")
+                
+                return subdomains
+        except Exception as e:
+            logger.error(f"Erro ao consultar URLScan: {e}")
+            console.print(f"[red][!][/red] [URLScan] Erro ao consultar")
+        
+        return set()
+    
+    async def search_dnsdumpster(self, domain: str) -> Set[str]:
+        """
+        Busca usando DNS Dumpster
         """
         try:
             url = "https://dnsdumpster.com/"
@@ -219,250 +331,69 @@ class PassiveRecon:
                             if not match.startswith('*'):
                                 subdomains.add(match.lower())
                         
-                        logger.info(f"[DNSDumpster Web] Encontrados {len(subdomains)} subdomínios")
+                        # Mostra apenas o resumo
+                        count = len(subdomains)
+                        if count > 0:
+                            console.print(f"[green][+][/green] [DNSDumpster] {count} subdomínios encontrados")
+                        else:
+                            console.print(f"[yellow][-][/yellow] [DNSDumpster] Nenhum subdomínio encontrado")
+                        
                         return subdomains
         except Exception as e:
-            logger.error(f"Erro ao consultar DNSDumpster Web: {e}")
-        
-        return set()
-    
-    async def search_alienvault(self, domain: str) -> Set[str]:
-        """
-        Busca usando AlienVault OTX - API opcional
-        """
-        api_key = self.api_configs.get('alienvault', {}).get('key')
-        
-        if api_key:
-            return await self._search_alienvault_api(domain, api_key)
-        else:
-            return await self._search_alienvault_web(domain)
-    
-    async def _search_alienvault_api(self, domain: str, api_key: str) -> Set[str]:
-        """
-        Busca usando API do AlienVault (com key)
-        """
-        try:
-            url = f"https://otx.alienvault.com/api/v1/indicators/domain/{domain}/passive_dns"
-            headers = {
-                **self.headers,
-                'X-OTX-API-KEY': api_key
-            }
-            
-            response_text, status = await self._make_request(url, headers=headers)
-            
-            if response_text and status == 200:
-                data = json.loads(response_text)
-                subdomains = set()
-                
-                for entry in data.get('passive_dns', []):
-                    hostname = entry.get('hostname', '')
-                    if hostname.endswith(domain):
-                        subdomains.add(hostname.lower())
-                
-                logger.info(f"[AlienVault API] Encontrados {len(subdomains)} subdomínios")
-                return subdomains
-        except Exception as e:
-            logger.error(f"Erro ao consultar AlienVault API: {e}")
-        
-        return set()
-    
-    async def _search_alienvault_web(self, domain: str) -> Set[str]:
-        """
-        Busca usando AlienVault OTX público (sem API key)
-        """
-        try:
-            url = f"https://otx.alienvault.com/api/v1/indicators/domain/{domain}/passive_dns"
-            
-            response_text, status = await self._make_request(url)
-            
-            if response_text and status == 200:
-                data = json.loads(response_text)
-                subdomains = set()
-                
-                for entry in data.get('passive_dns', []):
-                    hostname = entry.get('hostname', '')
-                    if hostname.endswith(domain):
-                        subdomains.add(hostname.lower())
-                
-                logger.info(f"[AlienVault Web] Encontrados {len(subdomains)} subdomínios")
-                return subdomains
-        except Exception as e:
-            logger.error(f"Erro ao consultar AlienVault Web: {e}")
-        
-        return set()
-    
-    # ... resto do código permanece igual ...
-    
-    async def search_crtsh(self, domain: str) -> Set[str]:
-        """
-        Busca em Certificate Transparency logs via crt.sh
-        """
-        try:
-            url = f"https://crt.sh/?q=%.{domain}&output=json"
-            
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, headers=self.headers, timeout=self.timeout, ssl=self.ssl_context) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        subdomains = set()
-                        
-                        for entry in data:
-                            name_value = entry.get('name_value', '')
-                            if name_value:
-                                # Extrair todos os domínios do certificado
-                                names = name_value.split('\n')
-                                for name in names:
-                                    if name.endswith(domain) and not name.startswith('*'):
-                                        subdomains.add(name.lower())
-                        
-                        logger.info(f"[crt.sh] Encontrados {len(subdomains)} subdomínios")
-                        return subdomains
-        except Exception as e:
-            logger.error(f"Erro ao consultar crt.sh: {e}")
-        
-        return set()
-    
-    async def search_hackertarget(self, domain: str) -> Set[str]:
-        """
-        Busca usando a API do HackerTarget
-        """
-        try:
-            url = f"https://api.hackertarget.com/hostsearch/?q={domain}"
-            
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, headers=self.headers, timeout=self.timeout) as response:
-                    if response.status == 200:
-                        text = await response.text()
-                        subdomains = set()
-                        
-                        for line in text.split('\n'):
-                            if ',' in line:
-                                subdomain = line.split(',')[0]
-                                if subdomain.endswith(domain):
-                                    subdomains.add(subdomain.lower())
-                        
-                        logger.info(f"[HackerTarget] Encontrados {len(subdomains)} subdomínios")
-                        return subdomains
-        except Exception as e:
-            logger.error(f"Erro ao consultar HackerTarget: {e}")
-        
-        return set()
-    
-    # Adicionar ao core/passive_recon.py
-
-    async def search_virustotal(self, domain: str, api_key: Optional[str] = None) -> Set[str]:
-        """
-        Busca usando VirusTotal (requer API key)
-        """
-        # Usa a API key do config se não for fornecida
-        api_key = api_key or config.VIRUSTOTAL_API_KEY
-        
-        if not api_key:
-            logger.info("[VirusTotal] Pulando - API key não fornecida")
-            return set()
-        
-        try:
-            url = f"https://www.virustotal.com/api/v3/domains/{domain}/subdomains"
-            headers = {
-                **self.headers,
-                'x-apikey': api_key
-            }
-            
-            response_text, status = await self._make_request(url, headers=headers)
-            
-            if response_text and status == 200:
-                data = json.loads(response_text)
-                subdomains = set()
-                
-                for item in data.get('data', []):
-                    subdomain = item.get('id', '')
-                    if subdomain.endswith(domain):
-                        subdomains.add(subdomain.lower())
-                
-                logger.info(f"[VirusTotal] Encontrados {len(subdomains)} subdomínios")
-                return subdomains
-        except Exception as e:
-            logger.error(f"Erro ao consultar VirusTotal: {e}")
-        
-        return set()
-
-    async def search_wayback(self, domain: str) -> Set[str]:
-        """
-        Busca usando Wayback Machine
-        """
-        try:
-            url = f"http://web.archive.org/cdx/search/cdx?url=*.{domain}&output=json&fl=original&collapse=urlkey"
-            
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, headers=self.headers, timeout=self.timeout) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        subdomains = set()
-                        
-                        for entry in data[1:]:  # Pula o header
-                            if entry:
-                                url = entry[0]
-                                # Extrair subdomínio do URL
-                                match = re.search(r'https?://([^/]+)', url)
-                                if match:
-                                    subdomain = match.group(1)
-                                    if subdomain.endswith(domain):
-                                        subdomains.add(subdomain.lower())
-                        
-                        logger.info(f"[Wayback] Encontrados {len(subdomains)} subdomínios")
-                        return subdomains
-        except Exception as e:
-            logger.error(f"Erro ao consultar Wayback: {e}")
+            logger.error(f"Erro ao consultar DNSDumpster: {e}")
+            console.print(f"[red][!][/red] [DNSDumpster] Erro ao consultar")
         
         return set()
     
     async def gather_subdomains(self, domain: str) -> Dict:
-      """
-      Executa todas as buscas de forma assíncrona
-      """
-      logger.info(f"Iniciando reconhecimento passivo para {domain}")
-      
-      # Executa todas as buscas em paralelo
-      tasks = [
-          self.search_crtsh(domain),
-          self.search_hackertarget(domain),
-          self.search_alienvault(domain),
-          self.search_urlscan(domain),
-          self.search_wayback(domain),
-          self.search_virustotal(domain),
-          self.search_dnsdumpster(domain),
-      ]
-      
-      results = await asyncio.gather(*tasks, return_exceptions=True)
-      
-      # Combina todos os resultados
-      all_subdomains = set()
-      source_counts = {}
-      
-      sources = [
-          'crt.sh', 'HackerTarget', 'AlienVault', 'URLScan', 
-          'Wayback', 'VirusTotal','DNSDumpster'
-      ]
-      
-      for source, result in zip(sources, results):
-          if isinstance(result, set):
-              all_subdomains.update(result)
-              source_counts[source] = len(result)
-          else:
-              if isinstance(result, Exception):
-                  logger.error(f"Exceção em {source}: {result}")
-              elif result is None:
-                  logger.warning(f"Sem resultados de {source}")
-              source_counts[source] = 0
-      
-      # Gera estatísticas
-      stats = {
-          'total_subdomains': len(all_subdomains),
-          'sources': source_counts,
-          'timestamp': datetime.now().isoformat(),
-      }
-      
-      return {
-          'subdomains': sorted(list(all_subdomains)),
-          'stats': stats
-      }
+        """
+        Executa todas as buscas de forma assíncrona com output em tempo real
+        """
+        console.print(f"[cyan]Iniciando reconhecimento passivo para {domain}[/cyan]")
+        console.print()  # Linha em branco
+        
+        tasks = [
+            self.search_crtsh(domain),
+            self.search_hackertarget(domain),
+            self.search_alienvault(domain),
+            self.search_urlscan(domain),
+            self.search_wayback(domain),
+            self.search_virustotal(domain),
+            self.search_dnsdumpster(domain),
+        ]
+        
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Combina todos os resultados
+        all_subdomains = set()
+        source_counts = {}
+        
+        sources = [
+            'crt.sh', 'HackerTarget', 'AlienVault', 'URLScan', 
+            'Wayback', 'VirusTotal', 'DNSDumpster'
+        ]
+        
+        for source, result in zip(sources, results):
+            if isinstance(result, set):
+                all_subdomains.update(result)
+                source_counts[source] = len(result)
+            else:
+                if isinstance(result, Exception):
+                    logger.error(f"Exceção em {source}: {result}")
+                elif result is None:
+                    logger.warning(f"Sem resultados de {source}")
+                source_counts[source] = 0
+        
+        console.print()  # Linha em branco antes do resumo
+        console.print(f"[bold cyan]Resumo do reconhecimento passivo:[/]")
+        
+        stats = {
+            'total_subdomains': len(all_subdomains),
+            'sources': source_counts,
+            'timestamp': datetime.now().isoformat(),
+        }
+        
+        return {
+            'subdomains': sorted(list(all_subdomains)),
+            'stats': stats
+        }

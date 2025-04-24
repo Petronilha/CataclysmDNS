@@ -3,9 +3,11 @@ import dns.asyncresolver
 import asyncio
 import json
 from datetime import datetime
+from rich.console import Console
 from utils.logger import setup_logger
 
 logger = setup_logger("monitoring")
+console = Console()
 
 async def fetch_records_async(domain: str, record_type: str = "A") -> set[str]:
     """Busca registros DNS de forma assíncrona"""
@@ -19,16 +21,24 @@ async def fetch_records_async(domain: str, record_type: str = "A") -> set[str]:
 
 async def monitor_async(domain: str, interval: int = 300, types: list[str] = ["A", "MX", "TXT"]):
     """
-    Monitora alterações de registros DNS de forma assíncrona
+    Monitora alterações de registros DNS de forma assíncrona com output em tempo real
     """
+    console.print(f"[cyan]Iniciando monitoramento de {domain}...[/cyan]")
+    console.print(f"[blue]Intervalo: {interval} segundos[/blue]")
+    console.print(f"[blue]Tipos: {', '.join(types)}[/blue]")
+    console.print()  # Linha em branco
+    
     last_records = {}
     for record_type in types:
         last_records[record_type] = await fetch_records_async(domain, record_type)
+        console.print(f"[green][+][/green] Estado inicial {record_type}: {last_records[record_type]}")
     
-    logger.info(f"Estado inicial: {last_records}")
+    console.print()  # Linha em branco
     
     while True:
         await asyncio.sleep(interval)
+        
+        console.print(f"[cyan][{datetime.now().strftime('%H:%M:%S')}] Verificando mudanças...[/cyan]")
         
         changes_detected = False
         
@@ -41,24 +51,18 @@ async def monitor_async(domain: str, interval: int = 300, types: list[str] = ["A
                 removed = last_records[record_type] - current
                 
                 if added:
-                    logger.warning(f"[↑] Novos registros {record_type}: {added}")
+                    console.print(f"[green][↑][/green] Novos registros {record_type}: {added}")
                 if removed:
-                    logger.warning(f"[↓] Registros {record_type} removidos: {removed}")
+                    console.print(f"[red][↓][/red] Registros {record_type} removidos: {removed}")
                 
                 last_records[record_type] = current
         
         if changes_detected:
-            logger.warning(f"[!] Mudanças detectadas em {domain} às {datetime.now()}")
+            console.print(f"[yellow][!][/yellow] Mudanças detectadas em {domain} às {datetime.now()}")
         else:
-            logger.info(f"[✓] Sem mudanças em {domain}")
-
-def fetch_records(domain: str, record_type: str = "A") -> set[str]:
-    """Versão síncrona mantida para compatibilidade"""
-    try:
-        answers = dns.resolver.resolve(domain, record_type)
-        return {rdata.to_text() for rdata in answers}
-    except Exception:
-        return set()
+            console.print(f"[green][✓][/green] Sem mudanças em {domain}")
+        
+        console.print()  # Linha em branco
 
 def monitor(domain: str, interval: int = 300):
     """Wrapper síncrono que chama a versão assíncrona"""

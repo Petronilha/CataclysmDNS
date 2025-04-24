@@ -1,0 +1,21 @@
+2025-04-24 07:54:49,409 - cli - INFO - Iniciando operação: enum_command
+2025-04-24 07:58:54,065 - cli - ERROR - Operação enum_command falhou após 244.66s: 
+2025-04-24 07:58:54,067 - cli - INFO - Operação cancelada pelo usuário
+2025-04-24 07:59:14,382 - cli - ERROR - Operação enum_command falhou após 16.05s: 
+2025-04-24 07:59:14,382 - cli - INFO - Operação cancelada pelo usuário
+2025-04-24 07:59:22,328 - cli - ERROR - Operação brute_command falhou após 2.76s: 
+2025-04-24 07:59:22,329 - cli - INFO - Operação cancelada pelo usuário
+2025-04-24 07:59:38,873 - cli - ERROR - Operação enum_command falhou após 11.46s: 
+2025-04-24 07:59:38,874 - cli - INFO - Operação cancelada pelo usuário
+2025-04-24 08:24:04,517 - cli - ERROR - Operação enum_command falhou após 14.46s: 
+2025-04-24 08:24:04,517 - cli - INFO - Operação cancelada pelo usuário
+2025-04-24 08:25:08,807 - cli - ERROR - Operação enum_command falhou após 0.00s: Wordlist não encontrada: wordlists/examplo.txt
+2025-04-24 08:25:08,808 - cli - ERROR - Erro com wordlist: Wordlist não encontrada: wordlists/examplo.txt
+2025-04-24 08:26:30,756 - cli - ERROR - Operação brute_command falhou após 26.76s: 
+2025-04-24 08:26:30,756 - cli - INFO - Operação cancelada pelo usuário
+2025-04-24 08:36:40,921 - cli - ERROR - Operação brute_command falhou após 13.87s: 
+2025-04-24 08:36:40,923 - cli - INFO - Operação cancelada pelo usuário
+2025-04-24 08:43:08,804 - cli - ERROR - Operação brute_command falhou após 155.81s: 
+2025-04-24 08:43:08,806 - cli - INFO - Operação cancelada pelo usuário
+2025-04-24 08:43:53,515 - cli - ERROR - Operação passive_command falhou após 0.92s: 
+2025-04-24 08:43:53,516 - cli - INFO - Operação cancelada pelo usuário

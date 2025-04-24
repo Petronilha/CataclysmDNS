@@ -2,9 +2,11 @@ import dns.resolver
 import aiohttp
 import asyncio
 from typing import Dict, Optional, List, Tuple
+from rich.console import Console
 from utils.logger import setup_logger
 
 logger = setup_logger("takeover_detector")
+console = Console()
 
 class SubdomainTakeoverDetector:
     """
@@ -44,36 +46,6 @@ class SubdomainTakeoverDetector:
                 'vulnerable': True,
                 'message': 'Loja Shopify não configurada'
             },
-            'zendesk': {
-                'cname': 'zendesk.com',
-                'fingerprint': 'Help Center Closed',
-                'vulnerable': True,
-                'message': 'Zendesk não configurado'
-            },
-            'wordpress': {
-                'cname': 'wpengine.com',
-                'fingerprint': 'This site is not available yet',
-                'vulnerable': True,
-                'message': 'WordPress não configurado'
-            },
-            'fastly': {
-                'cname': 'fastly.net',
-                'fingerprint': 'Fastly error: unknown domain',
-                'vulnerable': True,
-                'message': 'Fastly não configurado'
-            },
-            'netlify': {
-                'cname': 'netlify.app',
-                'fingerprint': 'Not Found',
-                'vulnerable': True,
-                'message': 'Netlify não configurado'
-            },
-            'ghost': {
-                'cname': 'ghost.io',
-                'fingerprint': ['404: Page not found', 'The thing you were looking for is no longer here'],
-                'vulnerable': True,
-                'message': 'Ghost blog não configurado'
-            }
         }
         
         # Headers para evitar bloqueios
@@ -101,14 +73,19 @@ class SubdomainTakeoverDetector:
             # Verificar se o serviço está vulnerável
             is_vulnerable = await self._check_vulnerability(subdomain, service_info)
             
-            return {
-                'subdomain': subdomain,
-                'vulnerable': is_vulnerable,
-                'service': service_info['service'],
-                'cname': cname_record,
-                'message': service_info['message'] if is_vulnerable else 'Não vulnerável',
-                'recommendation': self._get_recommendation(service_info['service']) if is_vulnerable else None
-            }
+            if is_vulnerable:
+                console.print(f"[red][!][/red] VULNERÁVEL: {subdomain} -> {cname_record} ({service_info['service']})")
+                return {
+                    'subdomain': subdomain,
+                    'vulnerable': True,
+                    'service': service_info['service'],
+                    'cname': cname_record,
+                    'message': service_info['message'],
+                    'recommendation': self._get_recommendation(service_info['service'])
+                }
+            else:
+                console.print(f"[green][+][/green] Seguro: {subdomain} -> {cname_record}")
+                return {'vulnerable': False}
             
         except Exception as e:
             logger.error(f"Erro ao verificar {subdomain}: {e}")
@@ -122,13 +99,7 @@ class SubdomainTakeoverDetector:
             answers = dns.resolver.resolve(subdomain, 'CNAME')
             return str(answers[0].target).rstrip('.')
         except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN):
-            # Tentar pegar registro A e verificar se é alias de algum serviço
-            try:
-                answers = dns.resolver.resolve(subdomain, 'A')
-                # Verificar PTR para descobrir o serviço
-                return None
-            except:
-                return None
+            return None
         except Exception as e:
             logger.debug(f"Erro ao obter CNAME de {subdomain}: {e}")
             return None
@@ -187,11 +158,6 @@ class SubdomainTakeoverDetector:
             'aws_s3': 'Crie o bucket S3 com o nome correto ou remova o registro CNAME',
             'azure': 'Configure o Azure Web App ou remova o registro CNAME',
             'shopify': 'Configure sua loja Shopify ou remova o registro CNAME',
-            'zendesk': 'Configure seu Zendesk ou remova o registro CNAME',
-            'wordpress': 'Configure seu site WordPress ou remova o registro CNAME',
-            'fastly': 'Configure o serviço Fastly ou remova o registro CNAME',
-            'netlify': 'Configure seu site Netlify ou remova o registro CNAME',
-            'ghost': 'Configure seu blog Ghost ou remova o registro CNAME'
         }
         
         return recommendations.get(service, 'Remova o registro CNAME ou configure o serviço corretamente')
@@ -200,6 +166,9 @@ class SubdomainTakeoverDetector:
         """
         Escaneia múltiplos subdomínios em paralelo
         """
+        console.print(f"[cyan]Iniciando detecção de takeover em {len(subdomains)} subdomínios...[/cyan]")
+        console.print()  # Linha em branco
+        
         semaphore = asyncio.Semaphore(workers)
         
         async def check_with_semaphore(subdomain):
