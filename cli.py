@@ -147,6 +147,9 @@ def show_banner():
     console.print("                [yellow]Toolkit avançado de pentest DNS[/]")
     console.print("                [dim white]Versão 1.0 - Por Petronilha[/]\n")
 
+if "--help" in sys.argv or "-h" in sys.argv:
+     show_banner()
+
 
 def validate_domain(domain: str) -> bool:
     """Valida se o domínio tem formato válido"""
