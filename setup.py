@@ -17,7 +17,8 @@ setup(
         "python-dotenv>=1.0.0",
         "beautifulsoup4>=4.12.2",
         "certifi>=2023.7.22",
-        "typing-extensions>=4.8.0"
+        "typing-extensions>=4.8.0",
+        "cachetools>=5.3.2"
     ],
     entry_points={
         "console_scripts": [

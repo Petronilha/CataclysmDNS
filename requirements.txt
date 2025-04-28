@@ -13,3 +13,4 @@ beautifulsoup4>=4.12.2
 aiofiles>=23.2.1
 aioredis>=2.0.1
 redis>=5.0.0
+cachetools>=5.3.2
