@@ -127,7 +127,71 @@ def handle_specific_errors(func):
 
 
 def show_banner():
-    """Exibe o banner ASCII art da ferramenta"""
+    """Exibe o banner ASCII art da ferramenta com adaptação para dispositivos móveis"""
+    import os
+    from rich.console import Console
+    
+    console = Console()
+    
+    # Detecta tamanho do terminal
+    try:
+        terminal_width = os.get_terminal_size().columns
+    except:
+        # Fallback para terminais muito estreitos
+        terminal_width = 30
+    
+    # Para terminais extremamente estreitos (como o da screenshot)
+    if terminal_width < 35:
+        # Versão extremamente simplificada para terminais muito estreitos
+        banner = r"""
+ ████ ████ ██ ██ █████
+ █    █  █ ███  █    
+ █    █  █ █ ██ █████
+ █    █  █ █  █ █    
+ ████ ████ █  █ █████
+        """
+        console.print(banner, style="bold cyan")
+        console.print(" [yellow]CataclysmDNS[/]")
+        console.print(" [dim white]v1.0[/]")
+        return
+    
+    # Para terminais móveis, mas não tão estreitos
+    if terminal_width < 60:
+        banner = r"""
+ ██████╗██████╗ ███╗   ██╗███████╗
+ ██╔═══╝██╔══██╗████╗  ██║██╔════╝
+ ██║    ██║  ██║██╔██╗ ██║███████╗
+ ██║    ██║  ██║██║╚██╗██║╚════██║
+ ╚████╗ ██████╔╝██║ ╚████║███████║
+  ╚═══╝ ╚═════╝ ╚═╝  ╚═══╝╚══════╝
+        """
+        console.print(banner, style="bold cyan")
+        console.print(" [yellow]CataclysmDNS v1.0[/]")
+        console.print(" [dim white]Por Petronilha[/]")
+        return
+    
+    # Para telas médias
+    if terminal_width < 80:
+        banner = r"""
+  ██████╗ █████╗ ████████╗ █████╗  ██████╗██╗  ██╗   ██╗███████╗███╗   ███╗
+ ██╔════╝██╔══██╗╚══██╔══╝██╔══██╗██╔════╝██║  ╚██╗ ██╔╝██╔════╝████╗ ████║
+ ██║     ███████║   ██║   ███████║██║     ██║   ╚████╔╝ ███████╗██╔████╔██║
+ ██║     ██╔══██║   ██║   ██╔══██║██║     ██║    ╚██╔╝  ╚════██║██║╚██╔╝██║
+ ╚██████╗██║  ██║   ██║   ██║  ██║╚██████╗███████╗██║   ███████║██║ ╚═╝ ██║
+  ╚═════╝╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝ ╚═════╝╚══════╝╚═╝   ╚══════╝╚═╝     ╚═╝
+         ██████╗ ███╗   ██╗███████╗
+         ██╔══██╗████╗  ██║██╔════╝
+         ██║  ██║██╔██╗ ██║███████╗
+         ██║  ██║██║╚██╗██║╚════██║
+         ██████╔╝██║ ╚████║███████║
+         ╚═════╝ ╚═╝  ╚═══╝╚══════╝
+        """
+        console.print(banner, style="bold cyan")
+        console.print("         [yellow]Toolkit avançado de pentest DNS[/]")
+        console.print("         [dim white]Versão 1.0 - Por Petronilha[/]")
+        return
+    
+    # Banner padrão para desktop ou telas largas
     banner = r"""
          ██████╗ █████╗ ████████╗ █████╗  ██████╗██╗  ██╗   ██╗███████╗███╗   ███╗
         ██╔════╝██╔══██╗╚══██╔══╝██╔══██╗██╔════╝██║  ╚██╗ ██╔╝██╔════╝████╗ ████║
@@ -142,10 +206,9 @@ def show_banner():
                         ██████╔╝██║ ╚████║███████║                              
                         ╚═════╝ ╚═╝  ╚═══╝╚══════╝                              
     """
-    
     console.print(banner, style="bold cyan")
     console.print("                [yellow]Toolkit avançado de pentest DNS[/]")
-    console.print("                [dim white]Versão 1.0 - Por Petronilha[/]\n")
+    console.print("                [dim white]Versão 1.0 - Por Petronilha[/]")
 
 if "--help" in sys.argv or "-h" in sys.argv:
      show_banner()
