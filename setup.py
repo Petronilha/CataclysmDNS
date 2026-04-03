@@ -4,7 +4,7 @@ setup(
     name="cataclysmdns",
     version="0.1.0",
     description="Ferramenta modular de pentest DNS",
-    author="Daniel Silva",
+    author="Daniel Petronilha",
     python_requires=">=3.8",
     packages=find_packages(include=["core", "core.*", "utils", "utils.*"]),
     py_modules=["cli", "config"],

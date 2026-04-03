@@ -771,7 +771,7 @@ def main(
         logging.getLogger("aiohttp").setLevel(logging.CRITICAL)
     
     # Mostra o banner apenas se não estiver no modo silencioso
-    if "--help" not in sys.argv and not quiet:
+    if ("--help" or "-h") not in sys.argv and not quiet:
         show_banner()
     if debug:
         logging.getLogger().setLevel(logging.DEBUG)
