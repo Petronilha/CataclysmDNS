@@ -44,7 +44,7 @@ from core.brute_force import brute_force
 from core.dnssec_checker import check_dnssec
 from core.monitoring import monitor
 from core.rate_limiter import RateLimiter, RateLimitConfig
-from core.takeover_detector import SubdomainTakeoverDetector
+from core.takeover_detector import TakeoverDetector
 from utils.wordlist_loader import load_wordlist
 from core.passive_recon import PassiveRecon
 # Temporariamente removido para evitar erros de importação
@@ -305,6 +305,7 @@ def enum(
     verbose: Annotated[bool, typer.Option("--verbose", "-v", help="Modo verboso")] = False,
     rate_limit: Annotated[float, typer.Option(help="Requisições por segundo")] = 10.0,
     timeout: Annotated[float, typer.Option(help="Timeout por requisição em segundos")] = 5.0,
+    permutations: Annotated[bool, typer.Option("--permutations/--no-permutations", help="Gerar variações da wordlist (MUITO mais lento)")] = False,
 ):
     """
     Enumeração avançada de subdomínios com múltiplos tipos de registro
@@ -322,20 +323,10 @@ def enum(
         if not Path(wordlist).exists():
             raise WordlistError(f"Wordlist não encontrada: {wordlist}")
         
-        # Configura rate limiter
         rate_limiter = RateLimiter(RateLimitConfig(requests_per_second=rate_limit))
+        resolver = create_enhanced_resolver(nameservers=[nameserver] if nameserver else None, timeout=timeout)
         
-        # Cria resolver (temporariamente sem cache)
-        resolver = create_enhanced_resolver(
-            nameservers=[nameserver] if nameserver else None,
-            timeout=timeout
-        )
-        
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            console=console,
-        ) as progress:
+        with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), console=console) as progress:
             task = progress.add_task(f"[cyan]Enumerando {domain}...", total=None)
             
             try:
@@ -343,30 +334,38 @@ def enum(
             except IOError as e:
                 raise WordlistError(f"Erro ao ler wordlist: {e}")
             
-            subs = generate_permutations(subs, limit_permutations=None)
+            if permutations:
+                subs = generate_permutations(subs, limit_permutations=None)
+                if verbose:
+                    console.print("\n[yellow]⚠️ Permutações ativadas: O scan será significativamente maior.[/]")
             
             if verbose:
                 console.print(f"[dim]Carregados {len(subs)} subdomínios para teste[/]")
-                console.print(f"[dim]Rate limit: {rate_limit} req/s[/]")
-                console.print(f"[dim]Timeout: {timeout}s[/]")
+                console.print(f"[dim]Rate limit: {rate_limit} req/s | Timeout: {timeout}s[/]")
             
-            console.print(f"[cyan]Enumerando {domain}...[/cyan]")
-            console.print()  # Linha em branco
-            
+            console.print(f"[cyan]Enumerando {domain}...[/cyan]\n")
             types = ["A", "AAAA", "MX", "TXT", "PTR"]
             
-            # Executa resolução com output em tempo real
             results = asyncio.run(enum_subdomains_core(
-                domain=domain,
-                subs=subs,
-                types=types,
-                nameserver=nameserver,
-                workers=workers
+                domain=domain, subs=subs, types=types, nameserver=nameserver, workers=workers
             ))
             
             progress.update(task, completed=True)
         
         wildcard_detected = detect_wildcard(domain)
+        
+        if results:
+            console.print()
+            display_results_table(results)
+            display_summary(results, wildcard_detected)
+            op_logger.add_metric("results_count", len(results))
+        else:
+            console.print("[yellow]Nenhum subdomínio encontrado.[/]")
+            if wildcard_detected:
+                console.print("[yellow]⚠️  Isso pode ser devido à detecção de Wildcard DNS.[/]")
+        
+        if output:
+            save_results(results, format, output)
         
         # Exibe os resultados finais
         if results:
@@ -651,8 +650,16 @@ def takeover(
                 console.print(f"[dim]Verificando {len(subdomains)} subdomínios[/]")
             
             try:
-                detector = SubdomainTakeoverDetector()
-                results = asyncio.run(detector.scan_subdomains(subdomains, workers))
+                detector = TakeoverDetector(concurrency=workers)
+                results = asyncio.run(detector.scan_list(subdomains))
+                if results:
+                    from rich.console import Console
+                    console = Console()
+                    console.print("\n[bold red]🚨 Possíveis Takeovers Detectados:[/bold red]")
+                    for vuln in results:
+                        console.print(f" - [cyan]{vuln['subdomain']}[/cyan] apontando para [yellow]{vuln['service']}[/yellow] ({vuln['type']})")
+                else:
+                    console.print("[green]Nenhum Subdomain Takeover detectado.[/green]")
             except Exception as e:
                 raise TakeoverDetectionError(f"Erro durante detecção de takeover: {e}")
             
@@ -771,7 +778,7 @@ def main(
         logging.getLogger("aiohttp").setLevel(logging.CRITICAL)
     
     # Mostra o banner apenas se não estiver no modo silencioso
-    if ("--help" or "-h") not in sys.argv and not quiet:
+    if "--help" not in sys.argv and not quiet:
         show_banner()
     if debug:
         logging.getLogger().setLevel(logging.DEBUG)

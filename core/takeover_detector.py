@@ -1,184 +1,141 @@
-import dns.resolver
-import aiohttp
 import asyncio
-from typing import Dict, Optional, List, Tuple
-from rich.console import Console
-from utils.logger import setup_logger
+import json
+import time
+from pathlib import Path
 
-logger = setup_logger("takeover_detector")
+import aiohttp
+import dns.asyncresolver
+import dns.resolver
+from rich.console import Console
+
 console = Console()
 
-class SubdomainTakeoverDetector:
+class TakeoverDetector:
     """
-    Detecta vulnerabilidades de subdomain takeover em diversos serviços cloud
+    Módulo para detectar Subdomain Takeovers utilizando assinaturas dinâmicas
+    da comunidade (can-i-take-over-xyz).
     """
-    
-    def __init__(self):
-        self.vulnerable_fingerprints = {
-            # Serviço: (fingerprint, possível, mensagem)
-            'github': {
-                'cname': 'github.io',
-                'fingerprint': 'There isn\'t a GitHub Pages site here.',
-                'vulnerable': True,
-                'message': 'GitHub Pages não configurado'
-            },
-            'heroku': {
-                'cname': 'herokuapp.com',
-                'fingerprint': 'No such app',
-                'vulnerable': True,
-                'message': 'Aplicação Heroku não encontrada'
-            },
-            'aws_s3': {
-                'cname': ['s3.amazonaws.com', 's3-website'],
-                'fingerprint': 'NoSuchBucket',
-                'vulnerable': True,
-                'message': 'S3 bucket não existe'
-            },
-            'azure': {
-                'cname': 'azurewebsites.net',
-                'fingerprint': ['Azure Web App - Error 404', 'Domain has not be properly configured'],
-                'vulnerable': True,
-                'message': 'Azure Web App não configurado'
-            },
-            'shopify': {
-                'cname': 'myshopify.com',
-                'fingerprint': 'Sorry, this shop is currently unavailable',
-                'vulnerable': True,
-                'message': 'Loja Shopify não configurada'
-            },
-        }
-        
-        # Headers para evitar bloqueios
-        self.headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        }
-    
-    async def check_subdomain(self, subdomain: str) -> Dict:
-        """
-        Verifica se um subdomínio está vulnerável a takeover
-        """
-        try:
-            # Primeiro, verificar se o subdomínio existe
-            cname_record = self._get_cname_record(subdomain)
-            
-            if not cname_record:
-                return {'vulnerable': False, 'reason': 'Sem registro CNAME'}
-            
-            # Verificar se o CNAME aponta para um serviço conhecido
-            service_info = self._identify_service(cname_record)
-            
-            if not service_info:
-                return {'vulnerable': False, 'reason': 'Serviço não reconhecido'}
-            
-            # Verificar se o serviço está vulnerável
-            is_vulnerable = await self._check_vulnerability(subdomain, service_info)
-            
-            if is_vulnerable:
-                console.print(f"[red][!][/red] VULNERÁVEL: {subdomain} -> {cname_record} ({service_info['service']})")
-                return {
-                    'subdomain': subdomain,
-                    'vulnerable': True,
-                    'service': service_info['service'],
-                    'cname': cname_record,
-                    'message': service_info['message'],
-                    'recommendation': self._get_recommendation(service_info['service'])
-                }
-            else:
-                console.print(f"[green][+][/green] Seguro: {subdomain} -> {cname_record}")
-                return {'vulnerable': False}
-            
-        except Exception as e:
-            logger.error(f"Erro ao verificar {subdomain}: {e}")
-            return {'vulnerable': False, 'error': str(e)}
-    
-    def _get_cname_record(self, subdomain: str) -> Optional[str]:
-        """
-        Obtém o registro CNAME do subdomínio
-        """
-        try:
-            answers = dns.resolver.resolve(subdomain, 'CNAME')
-            return str(answers[0].target).rstrip('.')
-        except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN):
-            return None
-        except Exception as e:
-            logger.debug(f"Erro ao obter CNAME de {subdomain}: {e}")
-            return None
-    
-    def _identify_service(self, cname: str) -> Optional[Dict]:
-        """
-        Identifica o serviço baseado no CNAME
-        """
-        for service, config in self.vulnerable_fingerprints.items():
-            
-            if isinstance(config['cname'], list):
-                if any(cn in cname for cn in config['cname']):
-                    return {'service': service, **config}
-            else:
-                if config['cname'] in cname:
-                    return {'service': service, **config}
-        
-        return None
-    
-    async def _check_vulnerability(self, subdomain: str, service_info: Dict) -> bool:
-        """
-        Verifica se o serviço está vulnerável acessando o subdomínio
-        """
-        try:
-            async with aiohttp.ClientSession() as session:
-                url = f"http://{subdomain}"
-                
-                async with session.get(url, headers=self.headers, timeout=10) as response:
-                    content = await response.text()
-                    status = response.status
-                    
-                    # Verificar fingerprints
-                    fingerprints = service_info['fingerprint']
-                    if isinstance(fingerprints, list):
-                        return any(fp in content for fp in fingerprints)
+    FINGERPRINTS_URL = "https://raw.githubusercontent.com/EdOverflow/can-i-take-over-xyz/master/fingerprints.json"
+    CACHE_DIR = Path.home() / ".cataclysmdns"
+    CACHE_FILE = CACHE_DIR / "fingerprints.json"
+    CACHE_EXPIRY_DAYS = 7
+
+    def __init__(self, concurrency: int = 50):
+        self.concurrency = concurrency
+        self.fingerprints: list[dict] = []
+        # Utilizando o resolver assíncrono para máxima performance
+        self.resolver = dns.asyncresolver.Resolver()
+        self.resolver.timeout = 3
+        self.resolver.lifetime = 3
+
+    async def initialize(self) -> None:
+        """Baixa e carrega o banco de dados de fingerprints mais recente."""
+        self.CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        needs_download = True
+
+        if self.CACHE_FILE.exists():
+            file_age_days = (time.time() - self.CACHE_FILE.stat().st_mtime) / 86400
+            if file_age_days < self.CACHE_EXPIRY_DAYS:
+                needs_download = False
+
+        if needs_download:
+            console.print("[cyan][*] Atualizando banco de dados de Subdomain Takeovers (can-i-take-over-xyz)...[/cyan]")
+            await self._download_fingerprints()
+
+        self._load_fingerprints()
+
+    async def _download_fingerprints(self) -> None:
+        """Busca o JSON oficial da comunidade."""
+        async with aiohttp.ClientSession() as session:
+            try:
+                async with session.get(self.FINGERPRINTS_URL, timeout=10) as response:
+                    if response.status == 200:
+                        data = await response.json(content_type=None)
+                        with open(self.CACHE_FILE, "w", encoding="utf-8") as f:
+                            json.dump(data, f, indent=4)
                     else:
-                        return fingerprints in content
+                        console.print(f"[red][!] Falha HTTP {response.status} ao baixar fingerprints.[/red]")
+            except Exception as e:
+                console.print(f"[red][!] Erro de rede ao buscar assinaturas: {e}[/red]")
+
+    def _load_fingerprints(self) -> None:
+        """Carrega os fingerprints do cache local para a memória."""
+        try:
+            with open(self.CACHE_FILE, "r", encoding="utf-8") as f:
+                raw_data = json.load(f)
+                # Filtramos apenas os serviços oficialmente marcados como vulneráveis
+                self.fingerprints = [entry for entry in raw_data if entry.get("status") == "Vulnerable"]
+        except Exception:
+            console.print("[yellow][!] Aviso: Arquivo de fingerprints ausente ou corrompido.[/yellow]")
+            self.fingerprints = []
+
+    async def check_subdomain(self, subdomain: str, session: aiohttp.ClientSession) -> dict | None:
+        """
+        Inspeciona um único subdomínio cruzando dados de DNS e requisição HTTP
+        com o banco de assinaturas.
+        """
+        cname_records = []
+        try:
+            answers = await self.resolver.resolve(subdomain, 'CNAME')
+            cname_records = [str(rdata.target).rstrip('.') for rdata in answers]
+        except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN):
+            pass # Subdomínios sem CNAME podem pular essa etapa
+        except Exception:
+            return None
+
+        for signature in self.fingerprints:
+            service_cnames = signature.get("cname", [])
+            matched_cname = False
+            
+            # Filtro 1: O CNAME do alvo bate com o provedor em nuvem?
+            if cname_records and service_cnames:
+                for target_cname in cname_records:
+                    if any(sc in target_cname for sc in service_cnames):
+                        matched_cname = True
+                        break
+
+            # Se o CNAME bater (ou se a assinatura não exigir CNAME específico), testamos a vulnerabilidade
+            if matched_cname or not service_cnames:
+                
+                # Filtro 2: Lógica de NXDOMAIN (O provedor exige que o CNAME não resolva para nada)
+                if signature.get("nxdomain", False):
+                    try:
+                        await self.resolver.resolve(subdomain, 'A')
+                    except dns.resolver.NXDOMAIN:
+                        return {"subdomain": subdomain, "service": signature["service"], "type": "NXDOMAIN (Dangling DNS)"}
+                    except Exception:
+                        pass
+                
+                # Filtro 3: Lógica de Fingerprint HTTP (O provedor exibe uma mensagem de erro específica)
+                expected_string = signature.get("fingerprint")
+                if expected_string:
+                    try:
+                        url = f"http://{subdomain}"
+                        async with session.get(url, timeout=5, ssl=False) as resp:
+                            body = await resp.text()
+                            if expected_string in body:
+                                return {"subdomain": subdomain, "service": signature["service"], "type": "HTTP Fingerprint Match"}
+                    except Exception:
+                        pass
+                        
+        return None
+
+    async def scan_list(self, subdomains: list[str]) -> list[dict]:
+        """Coordena o escaneamento em massa de uma lista de subdomínios."""
+        if not self.fingerprints:
+            await self.initialize()
+
+        results = []
+        connector = aiohttp.TCPConnector(limit=self.concurrency)
+        
+        async with aiohttp.ClientSession(connector=connector) as session:
+            tasks = [self.check_subdomain(sub, session) for sub in subdomains]
+            
+            # Executa com uma barra de progresso simples ou de forma silenciosa
+            for future in asyncio.as_completed(tasks):
+                result = await future
+                if result:
+                    console.print(f"[bold red][VULNERÁVEL][/bold red] {result['subdomain']} -> {result['service']} ({result['type']})")
+                    results.append(result)
                     
-        except aiohttp.ClientError as e:
-            # Alguns erros de conexão também indicam vulnerabilidade
-            if 'Cannot connect' in str(e) or 'Name or service not known' in str(e):
-                return True
-            logger.debug(f"Erro ao acessar {subdomain}: {e}")
-            return False
-        except Exception as e:
-            logger.debug(f"Erro inesperado ao verificar {subdomain}: {e}")
-            return False
-    
-    def _get_recommendation(self, service: str) -> str:
-        """
-        Retorna recomendações específicas por serviço
-        """
-        recommendations = {
-            'github': 'Crie um repositório GitHub Pages com o nome correto ou remova o registro CNAME',
-            'heroku': 'Crie uma aplicação Heroku com o nome correto ou remova o registro CNAME',
-            'aws_s3': 'Crie o bucket S3 com o nome correto ou remova o registro CNAME',
-            'azure': 'Configure o Azure Web App ou remova o registro CNAME',
-            'shopify': 'Configure sua loja Shopify ou remova o registro CNAME',
-        }
-        
-        return recommendations.get(service, 'Remova o registro CNAME ou configure o serviço corretamente')
-    
-    async def scan_subdomains(self, subdomains: List[str], workers: int = 10) -> List[Dict]:
-        """
-        Escaneia múltiplos subdomínios em paralelo
-        """
-        console.print(f"[cyan]Iniciando detecção de takeover em {len(subdomains)} subdomínios...[/cyan]")
-        console.print()  # Linha em branco
-        
-        semaphore = asyncio.Semaphore(workers)
-        
-        async def check_with_semaphore(subdomain):
-            async with semaphore:
-                return await self.check_subdomain(subdomain)
-        
-        tasks = [check_with_semaphore(sub) for sub in subdomains]
-        results = await asyncio.gather(*tasks)
-        
-        # Filtrar apenas vulneráveis
-        vulnerable_results = [r for r in results if r.get('vulnerable', False)]
-        
-        return vulnerable_results
+        return results

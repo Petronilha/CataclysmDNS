@@ -262,10 +262,10 @@ class RedisCacheBackend(BaseCacheBackend):
     
     def _connect(self):
         try:
-            import aioredis
-            self.redis = aioredis.from_url(self.redis_url)
+            import redis.asyncio as redis
+            self.redis = redis.from_url(self.redis_url)
         except ImportError:
-            logger.error("aioredis não está instalado. Use pip install aioredis")
+            logger.error("redis não está instalado. Use pip install redis")
         except Exception as e:
             logger.error(f"Erro ao conectar ao Redis: {e}")
     
