@@ -2,11 +2,17 @@ from pathlib import Path
 
 def load_wordlist(path: str) -> list[str]:
     """
-    Lê um arquivo de wordlist, removendo linhas em branco e comentários.
+    Carrega a wordlist tratando erros de codificação (acentos, etc)
     """
-    words = []
-    for line in Path(path).read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if line and not line.startswith("#"):
-            words.append(line)
-    return words
+    try:
+        # Tenta ler como UTF-8 (padrão moderno)
+        with open(path, 'r', encoding='utf-8') as f:
+            return [line.strip() for line in f if line.strip()]
+    except UnicodeDecodeError:
+        # Se falhar, tenta ler como latin-1 (ISO-8859-1), que aceita acentos brasileiros
+        try:
+            with open(path, 'r', encoding='latin-1') as f:
+                return [line.strip() for line in f if line.strip()]
+        except Exception as e:
+            print(f"[bold red][!] Erro ao ler wordlist:[/bold red] {e}")
+            return []
