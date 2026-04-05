@@ -70,55 +70,59 @@ class TakeoverDetector:
             self.fingerprints = []
 
     async def check_subdomain(self, subdomain: str, session: aiohttp.ClientSession) -> dict | None:
-        """
-        Inspeciona um único subdomínio cruzando dados de DNS e requisição HTTP
-        com o banco de assinaturas.
-        """
-        cname_records = []
-        try:
-            answers = await self.resolver.resolve(subdomain, 'CNAME')
-            cname_records = [str(rdata.target).rstrip('.') for rdata in answers]
-        except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN):
-            pass # Subdomínios sem CNAME podem pular essa etapa
-        except Exception:
+            """
+            Inspeciona um único subdomínio cruzando dados de DNS e requisição HTTP
+            com o banco de assinaturas.
+            """
+            cname_records = []
+            try:
+                answers = await self.resolver.resolve(subdomain, 'CNAME')
+                cname_records = [str(rdata.target).rstrip('.') for rdata in answers]
+            except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN):
+                pass # Subdomínios sem CNAME podem pular essa etapa
+            except Exception:
+                return None
+
+            for signature in self.fingerprints:
+                service_cnames = signature.get("cname", [])
+                matched_cname = False
+                
+                # Filtro 1: O CNAME do alvo bate com o provedor em nuvem?
+                if cname_records and service_cnames:
+                    for target_cname in cname_records:
+                        if any(sc in target_cname for sc in service_cnames):
+                            matched_cname = True
+                            break
+
+                # A MÁGICA ESTÁ AQUI: Exceção para Amazon S3 devido aos Alias Records da AWS
+                is_s3 = signature.get("service") == "Amazon S3"
+
+                # Se o CNAME bater, se a assinatura não exigir CNAME, OU se for Amazon S3, testamos a vulnerabilidade
+                if matched_cname or not service_cnames or is_s3:
+                    
+                    # Filtro 2: Lógica de NXDOMAIN (O provedor exige que o CNAME não resolva para nada)
+                    if signature.get("nxdomain", False):
+                        try:
+                            await self.resolver.resolve(subdomain, 'A')
+                        except dns.resolver.NXDOMAIN:
+                            return {"subdomain": subdomain, "service": signature["service"], "type": "NXDOMAIN (Dangling DNS)"}
+                        except Exception:
+                            pass
+                    
+                    # Filtro 3: Lógica de Fingerprint HTTP (O provedor exibe uma mensagem de erro específica)
+                    expected_string = signature.get("fingerprint")
+                    if expected_string:
+                        try:
+                            # Forçando timeout um pouco maior e tentando HTTP (o mais comum para takeovers S3)
+                            url = f"http://{subdomain}"
+                            async with session.get(url, timeout=10, ssl=False, allow_redirects=True) as resp:
+                                body = await resp.text()
+                                if expected_string in body:
+                                    return {"subdomain": subdomain, "service": signature["service"], "type": "HTTP Fingerprint Match"}
+                        except Exception:
+                            pass
+                            
             return None
-
-        for signature in self.fingerprints:
-            service_cnames = signature.get("cname", [])
-            matched_cname = False
-            
-            # Filtro 1: O CNAME do alvo bate com o provedor em nuvem?
-            if cname_records and service_cnames:
-                for target_cname in cname_records:
-                    if any(sc in target_cname for sc in service_cnames):
-                        matched_cname = True
-                        break
-
-            # Se o CNAME bater (ou se a assinatura não exigir CNAME específico), testamos a vulnerabilidade
-            if matched_cname or not service_cnames:
-                
-                # Filtro 2: Lógica de NXDOMAIN (O provedor exige que o CNAME não resolva para nada)
-                if signature.get("nxdomain", False):
-                    try:
-                        await self.resolver.resolve(subdomain, 'A')
-                    except dns.resolver.NXDOMAIN:
-                        return {"subdomain": subdomain, "service": signature["service"], "type": "NXDOMAIN (Dangling DNS)"}
-                    except Exception:
-                        pass
-                
-                # Filtro 3: Lógica de Fingerprint HTTP (O provedor exibe uma mensagem de erro específica)
-                expected_string = signature.get("fingerprint")
-                if expected_string:
-                    try:
-                        url = f"http://{subdomain}"
-                        async with session.get(url, timeout=5, ssl=False) as resp:
-                            body = await resp.text()
-                            if expected_string in body:
-                                return {"subdomain": subdomain, "service": signature["service"], "type": "HTTP Fingerprint Match"}
-                    except Exception:
-                        pass
-                        
-        return None
 
     async def scan_list(self, subdomains: list[str]) -> list[dict]:
         """Coordena o escaneamento em massa de uma lista de subdomínios."""

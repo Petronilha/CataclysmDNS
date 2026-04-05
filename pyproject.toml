@@ -17,7 +17,6 @@ dependencies = [
   "pysocks>=1.7.1",
   "requests[socks]>=2.31.0",
   "aiofiles>=23.2.1",
-  "redis>=5.0.3",
 ]
 description = "Ferramenta modular de pentest DNS"
 name = "cataclysmdns"

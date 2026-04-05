@@ -12,7 +12,6 @@ from rich.table import Table
 from rich.panel import Panel
 from rich.text import Text
 from functools import wraps
-import dns.resolver
 import ipaddress
 import logging
 
@@ -25,10 +24,9 @@ from core.exceptions import (
     WordlistError,
     InvalidConfigurationError,
     ZoneTransferError,
-    PassiveReconError,
     TakeoverDetectionError
 )
-from core.resolver_enhanced import EnhancedDNSResolver, create_enhanced_resolver
+from core.resolver_enhanced import create_enhanced_resolver
 from core.resolver_core import enum_subdomains_core
 from utils.enhanced_logger import setup_enhanced_logger, OperationLogger
 from utils.retry_handler import retry_with_backoff, DNS_RETRY_CONFIG
@@ -41,14 +39,9 @@ from core.resolver import (
 )
 from core.zone_transfer import attempt_axfr
 from core.brute_force import brute_force
-from core.dnssec_checker import check_dnssec
-from core.monitoring import monitor
 from core.rate_limiter import RateLimiter, RateLimitConfig
 from core.takeover_detector import TakeoverDetector
 from utils.wordlist_loader import load_wordlist
-from core.passive_recon import PassiveRecon
-# Temporariamente removido para evitar erros de importação
-# from core.cache_config import caching_system
 
 app = typer.Typer(help="CataclysmDNS — toolkit avançado de pentest DNS")
 console = Console(force_terminal=True)  # Para garantir saída imediata
@@ -93,11 +86,6 @@ def handle_specific_errors(func):
             logger.error(f"Configuração inválida: {e.message}", 
                         extra={"extra_data": {"error_type": "config"}})
             console.print(f"[red]Erro: Configuração inválida - {e.message}[/]")
-            raise typer.Exit(1)
-        except PassiveReconError as e:
-            logger.error(f"Erro no reconhecimento passivo: {e.message}", 
-                        extra={"extra_data": {"error_type": "passive_recon"}})
-            console.print(f"[red]Erro: Falha no reconhecimento passivo - {e.message}[/]")
             raise typer.Exit(1)
         except ZoneTransferError as e:
             logger.error(f"Erro na transferência de zona: {e.message}", 
@@ -384,47 +372,6 @@ def enum(
 
 @app.command()
 @handle_specific_errors
-def resolve(
-    name: Annotated[str, typer.Option(help="FQDN ou IP para resolver")],
-    record: Annotated[str, typer.Option(help="Tipo de registro")] = "A",
-    nameserver: Annotated[Optional[str], typer.Option(help="Servidor DNS customizado")] = None,
-    timeout: Annotated[float, typer.Option(help="Timeout em segundos")] = 2.0,
-):
-    """Resolve um único registro DNS de forma síncrona."""
-    with OperationLogger("resolve_command", logger) as op_logger:
-        op_logger.add_metric("name", name)
-        op_logger.add_metric("record_type", record)
-        
-        resolver = create_enhanced_resolver(
-            nameservers=[nameserver] if nameserver else None,
-            timeout=timeout
-        )
-        
-        # Executa resolução assíncroma usando run_until_complete
-        loop = asyncio.get_event_loop()
-        values = loop.run_until_complete(
-            resolver.resolve_with_enhanced_error_handling(name, record)
-        )
-        
-        if values:
-            table = Table(show_header=True, header_style="bold cyan")
-            table.add_column("Registro", style="green")
-            table.add_column("Tipo", style="magenta")
-            table.add_column("Valor", style="white")
-            
-            for v in values:
-                table.add_row(name, record, v)
-            
-            console.print()
-            console.print(table)
-            console.print()
-            op_logger.add_metric("results_count", len(values))
-        else:
-            console.print(f"[red]❌ Sem resposta para {name} {record}[/]")
-
-
-@app.command()
-@handle_specific_errors
 @retry_with_backoff(DNS_RETRY_CONFIG)
 def zone_transfer(
     domain: Annotated[str, typer.Option(help="Domínio alvo")],
@@ -500,268 +447,99 @@ def brute(
         if output:
             save_results(results, "json", output)
 
-
-@app.command()
-@handle_specific_errors
-def dnssec(
-    domain: Annotated[str, typer.Option(help="Domínio alvo")],
-    verbose: Annotated[bool, typer.Option("--verbose", "-v", help="Modo verboso")] = False,
-):
-    """Verifica DNSSEC"""
-    with OperationLogger("dnssec_command", logger) as op_logger:
-        op_logger.add_metric("domain", domain)
-        
-        validate_domain(domain)
-        
-        try:
-            enabled = check_dnssec(domain)
-        except Exception as e:
-            raise CataclysmDNSError(f"Erro ao verificar DNSSEC: {e}")
-        
-        console.print()  # Linha em branco para separação
-        op_logger.add_metric("dnssec_enabled", enabled)
-
-
-@app.command()
-@handle_specific_errors
-def monitor_dns(
-    domain: Annotated[str, typer.Option(help="Domínio alvo")],
-    interval: Annotated[int, typer.Option(help="Intervalo em segundos")] = 300,
-    output: Annotated[Optional[str], typer.Option(help="Arquivo de log")] = None,
-):
-    """Monitora mudanças de registros DNS"""
-    with OperationLogger("monitor_command", logger) as op_logger:
-        op_logger.add_metric("domain", domain)
-        op_logger.add_metric("interval", interval)
-        
-        validate_domain(domain)
-        
-        if output:
-            # Configurar logger para arquivo
-            file_handler = logging.FileHandler(output)
-            file_handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
-            logging.getLogger("monitoring").addHandler(file_handler)
-        
-        try:
-            monitor(domain, interval)
-        except Exception as e:
-            raise CataclysmDNSError(f"Erro durante monitoramento: {e}")
-
-
-@app.command()
-@handle_specific_errors
-def passive(
-    domain: Annotated[str, typer.Option(help="Domínio alvo")],
-    output: Annotated[Optional[str], typer.Option(help="Arquivo de output")] = None,
-    format: Annotated[str, typer.Option(help="Formato do output (json, csv, txt)")] = "json",
-    verbose: Annotated[bool, typer.Option("--verbose", "-v", help="Modo verboso")] = False,
-    debug: Annotated[bool, typer.Option("--debug", help="Salvar HTML para análise")] = False,
-):
-    """
-    Realiza reconhecimento passivo de DNS usando múltiplas fontes
-    """
-    with OperationLogger("passive_command", logger) as op_logger:
-        op_logger.add_metric("domain", domain)
-        
-        validate_domain(domain)
-        
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            console=console,
-        ) as progress:
-            task = progress.add_task(f"[cyan]Reconhecimento passivo em {domain}...", total=None)
-            
-            try:
-                recon = PassiveRecon(debug=debug)
-                results = asyncio.run(recon.gather_subdomains(domain))
-            except Exception as e:
-                raise PassiveReconError(f"Erro durante reconhecimento passivo: {e}")
-            
-            progress.update(task, completed=True)
-        
-        # Exibir resultados
-        if results['subdomains']:
-            stats_table = Table(title="📊 Estatísticas por Fonte", show_header=True, header_style="bold blue")
-            stats_table.add_column("Fonte", style="cyan", width=20)
-            stats_table.add_column("Subdomínios", style="green", justify="right")
-            
-            for source, count in results['stats']['sources'].items():
-                stats_table.add_row(source, str(count) if count > 0 else "-")
-            
-            console.print()
-            console.print(stats_table)
-            console.print()
-            
-            sub_table = Table(title="🔍 Subdomínios Encontrados", show_header=True, header_style="bold green")
-            sub_table.add_column("#", style="dim", width=6)
-            sub_table.add_column("Subdomínio", style="green")
-            
-            for i, sub in enumerate(results['subdomains'], 1):
-                sub_table.add_row(str(i), sub)
-            
-            console.print(sub_table)
-            console.print()
-            console.print(f"[green]✓ Total: {len(results['subdomains'])} subdomínios únicos encontrados[/]")
-            
-            op_logger.add_metric("subdomains_found", len(results['subdomains']))
-        else:
-            console.print("[yellow]Nenhum subdomínio encontrado[/]")
-        
-        if output:
-            save_results(results, format, output)
-
-
 @app.command()
 @handle_specific_errors
 def takeover(
-    domain: Annotated[str, typer.Option(help="Domínio alvo")],
-    wordlist: Annotated[str, typer.Option(help="Wordlist de subdomínios")] = "wordlists/subdomains.txt",
+    domain: Annotated[Optional[str], typer.Option(help="Domínio alvo base (se for usar wordlist)")] = None,
+    wordlist: Annotated[str, typer.Option(help="Wordlist de prefixos (ex: dev, api)")] = "wordlists/subdomains.txt",
+    input_list: Annotated[Optional[str], typer.Option("--input", "-i", help="Arquivo txt com subdomínios completos (ex: api.alvo.com)")] = None,
     output: Annotated[Optional[str], typer.Option(help="Arquivo de output")] = None,
     workers: Annotated[int, typer.Option(help="Workers paralelos")] = 10,
     verbose: Annotated[bool, typer.Option("--verbose", "-v", help="Modo verboso")] = False,
 ):
     """
-    Detecta vulnerabilidades de subdomain takeover
+    Detecta vulnerabilidades de subdomain takeover de forma dinâmica.
+    Pode usar uma wordlist + domain, ou ler uma lista pronta de subdomínios via --input.
     """
     with OperationLogger("takeover_command", logger) as op_logger:
-        op_logger.add_metric("domain", domain)
-        op_logger.add_metric("wordlist", wordlist)
         
-        validate_domain(domain)
+        # Validando se o usuário passou as informações mínimas
+        if not domain and not input_list:
+            console.print("[red][!] Você deve fornecer um --domain (para gerar via wordlist) OU um --input (lista txt de subdomínios).[/red]")
+            raise typer.Exit(code=1)
+
+        subdomains = []
         
-        if not Path(wordlist).exists():
-            raise WordlistError(f"Wordlist não encontrada: {wordlist}")
-        
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            console=console,
-        ) as progress:
-            task = progress.add_task(f"[cyan]Detectando takeover em {domain}...", total=None)
-            
-            try:
-                subs = load_wordlist(wordlist)
+        # LÓGICA DE CARREGAMENTO (Wordlist vs Arquivo Pronto)
+        try:
+            if input_list:
+                if not Path(input_list).exists():
+                    raise WordlistError(f"Arquivo de entrada não encontrado: {input_list}")
+                # Lê os subdomínios inteiros direto do arquivo
+                subdomains = [l.strip() for l in open(input_list, encoding="utf-8") if l.strip()]
+                if verbose:
+                    console.print(f"[dim]Carregados {len(subdomains)} subdomínios do arquivo {input_list}[/dim]")
+            elif domain:
+                validate_domain(domain)
+                if not Path(wordlist).exists():
+                    raise WordlistError(f"Wordlist não encontrada: {wordlist}")
+                # Junta a wordlist com o domínio base
+                subs = [l.strip() for l in open(wordlist, encoding="utf-8") if l.strip()]
                 subdomains = [f"{sub}.{domain}" for sub in subs]
-            except Exception as e:
-                raise WordlistError(f"Erro ao carregar wordlist: {e}")
+                if verbose:
+                    console.print(f"[dim]Gerados {len(subdomains)} subdomínios a partir da wordlist[/dim]")
+        except IOError as e:
+            raise WordlistError(f"Erro ao ler arquivo: {e}")
             
-            if verbose:
-                console.print(f"[dim]Verificando {len(subdomains)} subdomínios[/]")
+        if not subdomains:
+            console.print("[yellow][!] Nenhum subdomínio carregado para teste.[/yellow]")
+            raise typer.Exit()
+
+        with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), console=console) as progress:
+            task = progress.add_task(f"[cyan]Detectando takeover em {len(subdomains)} alvos...", total=None)
             
             try:
                 detector = TakeoverDetector(concurrency=workers)
-                results = asyncio.run(detector.scan_list(subdomains))
-                if results:
-                    from rich.console import Console
-                    console = Console()
-                    console.print("\n[bold red]🚨 Possíveis Takeovers Detectados:[/bold red]")
-                    for vuln in results:
-                        console.print(f" - [cyan]{vuln['subdomain']}[/cyan] apontando para [yellow]{vuln['service']}[/yellow] ({vuln['type']})")
-                else:
-                    console.print("[green]Nenhum Subdomain Takeover detectado.[/green]")
+                
+                # Prevenção de loop fechado do Typer
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                results = loop.run_until_complete(detector.scan_list(subdomains))
+                loop.close()
+                
             except Exception as e:
                 raise TakeoverDetectionError(f"Erro durante detecção de takeover: {e}")
             
             progress.update(task, completed=True)
         
-        # Exibir resultados
         if results:
             table = Table(title="🚨 Vulnerabilidades de Subdomain Takeover", show_header=True, header_style="bold red")
             table.add_column("Subdomínio", style="green", width=30)
-            table.add_column("Serviço", style="cyan", width=15)
-            table.add_column("CNAME", style="yellow", width=30)
-            table.add_column("Recomendação", style="white", width=50)
+            table.add_column("Serviço", style="yellow", width=15)
+            table.add_column("Tipo de Match", style="cyan", width=30)
             
             for result in results:
                 table.add_row(
                     result['subdomain'],
                     result['service'],
-                    result['cname'],
-                    result['recommendation']
+                    result['type']
                 )
             
             console.print()
             console.print(table)
-            console.print(f"\n[red]⚠️  {len(results)} vulnerabilidades encontradas![/]")
-            
+            console.print(f"\n[bold red]⚠️  {len(results)} possíveis takeovers encontrados![/bold red]")
             op_logger.add_metric("vulnerabilities_found", len(results))
         else:
-            console.print("[green]✓ Nenhuma vulnerabilidade de subdomain takeover encontrada[/]")
+            console.print("\n[green]✓ Nenhum Subdomain Takeover detectado nas verificações.[/green]")
         
         if output:
             save_results({'takeover_vulnerabilities': results}, 'json', output)
-
-
-@app.command()
-@handle_specific_errors
-def cache_stats():
-    """Exibe estatísticas do cache"""
-    stats = caching_system.get_all_stats()
-    
-    for cache_name, cache_stats in stats.items():
-        stats_panel = Panel(
-            f"""
-[bold]Cache:[/] {cache_name}
-[green]Hits:[/] {cache_stats['hits']}
-[red]Misses:[/] {cache_stats['misses']}
-[blue]Sets:[/] {cache_stats['sets']}
-[yellow]Deletes:[/] {cache_stats['deletes']}
-[cyan]Hit Rate:[/] {cache_stats['hit_rate']:.1%}
-[dim]Last Reset:[/] {cache_stats['last_reset']}
-""",
-            title=f"📊 Estatísticas - {cache_name}",
-            border_style="blue"
-        )
-        console.print(stats_panel)
-        console.print()
-
-
-@app.command()
-@handle_specific_errors
-def cache_clear(
-    cache_type: Annotated[Optional[str], typer.Option(help="Tipo específico de cache para limpar")] = None,
-    force: Annotated[bool, typer.Option("--force", "-f", help="Força limpeza sem confirmação")] = False
-):
-    """Limpa o cache (todo ou específico)"""
-    if cache_type:
-        if cache_type not in caching_system.cache_map:
-            console.print(f"[red]Tipo de cache inválido: {cache_type}[/]")
-            console.print(f"[yellow]Tipos válidos: {', '.join(caching_system.cache_map.keys())}[/]")
-            raise typer.Exit(1)
-        
-        if not force:
-            confirm = typer.confirm(f"Tem certeza que deseja limpar o cache '{cache_type}'?")
-            if not confirm:
-                console.print("[yellow]Operação cancelada[/]")
-                return
-        
-        asyncio.run(caching_system.get_cache(cache_type).clear())
-        console.print(f"[green]Cache '{cache_type}' limpo com sucesso[/]")
-    else:
-        if not force:
-            confirm = typer.confirm("Tem certeza que deseja limpar TODO o cache?")
-            if not confirm:
-                console.print("[yellow]Operação cancelada[/]")
-                return
-        
-        asyncio.run(caching_system.clear_all())
-        console.print("[green]Todo o cache foi limpo com sucesso[/]")
-
-
-@app.command()
-@handle_specific_errors
-def cache_reset_stats():
-    """Reseta as estatísticas do cache"""
-    caching_system.reset_all_stats()
-    console.print("[green]Estatísticas do cache resetadas com sucesso[/]")
 
 
 @app.callback()
 def main(
     debug: Annotated[bool, typer.Option("--debug", help="Ativar modo debug")] = False,
     quiet: Annotated[bool, typer.Option("--quiet", "-q", help="Modo silencioso")] = False,
-    no_cache: Annotated[bool, typer.Option("--no-cache", help="Desabilitar cache temporariamente")] = False,
 ):
     """CataclysmDNS - Ferramenta avançada de pentest DNS"""
     # Configura limpeza automática de logs
@@ -784,8 +562,6 @@ def main(
         logging.getLogger().setLevel(logging.DEBUG)
     if quiet:
         console.quiet = True
-    if no_cache:
-        console.print("[yellow]Cache ainda não implementado[/]")
 
 
 if __name__ == "__main__":
