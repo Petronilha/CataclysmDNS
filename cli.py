@@ -4,13 +4,14 @@ import json
 import csv
 import sys
 from pathlib import Path
-from typing import Optional, Dict, List
+from typing import Optional
 from typing_extensions import Annotated
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
 from rich.text import Text
+from rich import box
 from functools import wraps
 import ipaddress
 import logging
@@ -38,10 +39,7 @@ from core.resolver import (
     detect_wildcard,
 )
 from core.zone_transfer import attempt_axfr
-from core.brute_force import brute_force
 from core.rate_limiter import RateLimiter, RateLimitConfig
-from core.takeover_detector import TakeoverDetector
-from utils.wordlist_loader import load_wordlist
 
 app = typer.Typer(help="CataclysmDNS — toolkit avançado de pentest DNS")
 console = Console(force_terminal=True)  # Para garantir saída imediata
@@ -139,7 +137,7 @@ def show_banner():
         """
         console.print(banner, style="bold cyan")
         console.print(" [yellow]CataclysmDNS[/]")
-        console.print(" [dim white]v1.0[/]")
+        console.print(" [dim white]v2.0[/]")
         return
     
     # Para terminais móveis, mas não tão estreitos
@@ -153,7 +151,7 @@ def show_banner():
   ╚═══╝ ╚═════╝ ╚═╝  ╚═══╝╚══════╝
         """
         console.print(banner, style="bold cyan")
-        console.print(" [yellow]CataclysmDNS v1.0[/]")
+        console.print(" [yellow]CataclysmDNS v2.0[/]")
         console.print(" [dim white]Por Petronilha[/]")
         return
     
@@ -175,7 +173,7 @@ def show_banner():
         """
         console.print(banner, style="bold cyan")
         console.print("         [yellow]Toolkit avançado de pentest DNS[/]")
-        console.print("         [dim white]Versão 1.0 - Por Petronilha[/]")
+        console.print("         [dim white]Versão 2.0 - Por Petronilha[/]")
         return
     
     # Banner padrão para desktop ou telas largas
@@ -195,7 +193,7 @@ def show_banner():
     """
     console.print(banner, style="bold cyan")
     console.print("                [yellow]Toolkit avançado de pentest DNS[/]")
-    console.print("                [dim white]Versão 1.0 - Por Petronilha[/]")
+    console.print("                [dim white]Versão 2.0 - Por Petronilha[/]")
 
 if "--help" in sys.argv or "-h" in sys.argv:
      show_banner()
@@ -246,16 +244,24 @@ def save_results(results: dict, output_format: str, output_file: str):
 
 
 def display_results_table(results: dict):
-    """Exibe os resultados em formato de tabela"""
-    table = Table(title="🔍 Resultados da Enumeração", show_header=True, header_style="bold cyan")
-    table.add_column("Subdomínio", style="green", width=40)
-    table.add_column("Tipo", style="magenta", width=10)
-    table.add_column("Valor", style="white", width=40)
+    """Exibe os resultados em formato de tabela elegante"""
+    table = Table(
+        title="[bold cyan]🔍 Resultados da Enumeração DNS[/]", 
+        show_header=True, 
+        header_style="bold black on cyan",
+        box=box.MINIMAL_DOUBLE_HEAD, # Estilo mais limpo, destacando o cabeçalho
+        show_lines=True # Adiciona linhas sutis entre os resultados para facilitar a leitura
+    )
+    table.add_column("Subdomínio", style="bold green", width=40)
+    table.add_column("Tipo", style="bold magenta", width=10, justify="center")
+    table.add_column("Valor / Apontamento", style="white", width=45)
     
     for fqdn, records in results.items():
         for rdtype, values in records.items():
             for value in values:
-                table.add_row(fqdn, rdtype, value)
+                # Adiciona um marcador visual dependendo do tipo de registro
+                icon = "🌐" if rdtype in ["A", "AAAA"] else "📧" if rdtype == "MX" else "📝" if rdtype == "TXT" else "➡️ "
+                table.add_row(fqdn, f"{icon} {rdtype}", value)
     
     console.print()
     console.print(table)
@@ -263,21 +269,36 @@ def display_results_table(results: dict):
 
 
 def display_summary(results: dict, wildcard_detected: bool):
-    """Exibe um resumo dos resultados"""
+    """Exibe um resumo dos resultados com alinhamento perfeito"""
     total_subdomains = len(results)
     total_records = sum(len(records) for records in results.values())
     
-    summary = Panel(
-        f"""
-[green]✓[/] Total de subdomínios encontrados: [bold]{total_subdomains}[/]
-[blue]ℹ[/] Total de registros DNS: [bold]{total_records}[/]
-[yellow]⚠[/] Wildcard DNS: [bold]{'Detectado' if wildcard_detected else 'Não detectado'}[/]
-""",
-        title="📊 Sumário",
-        border_style="blue"
+    wildcard_text = "[bold red]Detectado[/]" if wildcard_detected else "[bold green]Não detectado[/]"
+    
+    # Cria uma grade invisível para garantir o alinhamento perfeito
+    grid = Table.grid(padding=(0, 2)) # Espaçamento de 2 caracteres entre as colunas
+    
+    # Definindo as 3 colunas (Ícone, Descrição, Valor)
+    grid.add_column(justify="center") 
+    grid.add_column(justify="left", style="white")
+    grid.add_column(justify="left")
+    
+    # Adicionando as linhas ao grid
+    grid.add_row("[green]✓[/]", "Total de subdomínios únicos encontrados:", f"[bold white]{total_subdomains}[/]")
+    grid.add_row("[blue]ℹ[/]", "Total de registros DNS extraídos:", f"[bold white]{total_records}[/]")
+    grid.add_row("[yellow]⚠[/]", "Status de Wildcard DNS:", wildcard_text)
+    
+    # Colocando o grid dentro do Painel
+    summary_panel = Panel(
+        grid,
+        title="[bold]📊 Sumário da Execução[/]",
+        border_style="blue",
+        box=box.ROUNDED, # Mantém as bordas arredondadas do painel externo
+        padding=(1, 4)   # Dá um respiro interno (cima/baixo, esquerda/direita)
     )
     
-    console.print(summary)
+    console.print()
+    console.print(summary_panel)
 
 
 @app.command()
@@ -313,7 +334,7 @@ def enum(
         rate_limiter = RateLimiter(RateLimitConfig(requests_per_second=rate_limit))
         resolver = create_enhanced_resolver(nameservers=[nameserver] if nameserver else None, timeout=timeout)
         
-        with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), console=console) as progress:
+        with Progress(TextColumn(" "), SpinnerColumn(speed=1.5), TextColumn("[progress.description]{task.description}"), console=console) as progress:
             task = progress.add_task(f"[cyan]Enumerando {domain}...", total=None)
             
             try:
@@ -324,22 +345,22 @@ def enum(
             if permutations:
                 subs = generate_permutations(subs, limit_permutations=None)
                 if verbose:
-                    console.print("\n[yellow]⚠️ Permutações ativadas: O scan será significativamente maior.[/]")
+                    console.print("  \n[yellow]⚠️ Permutações ativadas: O scan será significativamente maior.[/]")
             
             if verbose:
-                console.print(f"[dim]Carregados {len(subs)} subdomínios para teste[/]")
-                console.print(f"[dim]Rate limit: {rate_limit} req/s | Timeout: {timeout}s[/]")
+                console.print(f"             [dim]Carregados {len(subs)} subdomínios para teste[/]")
+                console.print(f"      [dim]Rate limit: {rate_limit} req/s | Timeout: {timeout}s | Workers: {workers}[/]")
+                console.print()
             
-            console.print(f"[cyan]Enumerando {domain}...[/cyan]\n")
             types = ["A", "AAAA", "MX", "TXT", "PTR"]
             
             results = asyncio.run(enum_subdomains_core(
-                domain=domain, subs=subs, types=types, nameserver=nameserver, workers=workers
+                domain=domain, subs=subs, types=types, nameserver=nameserver, workers=workers, console=console
             ))
             
             progress.update(task, completed=True)
         
-        wildcard_detected = detect_wildcard(domain)
+        wildcard_detected = detect_wildcard(domain) 
         
         if results:
             console.print()
@@ -353,17 +374,6 @@ def enum(
         
         if output:
             save_results(results, format, output)
-        
-        # Exibe os resultados finais
-        if results:
-            console.print()  # Linha em branco antes da tabela
-            display_results_table(results)
-            display_summary(results, wildcard_detected)
-            op_logger.add_metric("results_count", len(results))
-        else:
-            console.print("[yellow]Nenhum subdomínio encontrado.[/]")
-            if wildcard_detected:
-                console.print("[yellow]⚠️  Isso pode ser devido à detecção de Wildcard DNS.[/]")
         
         if output:
             save_results(results, format, output)
@@ -398,94 +408,6 @@ def zone_transfer(
         
         if output and records:
             save_results({"zone_transfer": records}, "json", output)
-
-@app.command()
-@handle_specific_errors
-def takeover(
-    domain: Annotated[Optional[str], typer.Option(help="Domínio alvo base (se for usar wordlist)")] = None,
-    wordlist: Annotated[str, typer.Option(help="Wordlist de prefixos (ex: dev, api)")] = "wordlists/subdomains.txt",
-    input_list: Annotated[Optional[str], typer.Option("--input", "-i", help="Arquivo txt com subdomínios completos (ex: api.alvo.com)")] = None,
-    output: Annotated[Optional[str], typer.Option(help="Arquivo de output")] = None,
-    workers: Annotated[int, typer.Option(help="Workers paralelos")] = 10,
-    verbose: Annotated[bool, typer.Option("--verbose", "-v", help="Modo verboso")] = False,
-):
-    """
-    Detecta vulnerabilidades de subdomain takeover de forma dinâmica.
-    Pode usar uma wordlist + domain, ou ler uma lista pronta de subdomínios via --input.
-    """
-    with OperationLogger("takeover_command", logger) as op_logger:
-        
-        # Validando se o usuário passou as informações mínimas
-        if not domain and not input_list:
-            console.print("[red][!] Você deve fornecer um --domain (para gerar via wordlist) OU um --input (lista txt de subdomínios).[/red]")
-            raise typer.Exit(code=1)
-
-        subdomains = []
-        
-        # LÓGICA DE CARREGAMENTO (Wordlist vs Arquivo Pronto)
-        try:
-            if input_list:
-                if not Path(input_list).exists():
-                    raise WordlistError(f"Arquivo de entrada não encontrado: {input_list}")
-                # Lê os subdomínios inteiros direto do arquivo
-                subdomains = [l.strip() for l in open(input_list, encoding="utf-8") if l.strip()]
-                if verbose:
-                    console.print(f"[dim]Carregados {len(subdomains)} subdomínios do arquivo {input_list}[/dim]")
-            elif domain:
-                validate_domain(domain)
-                if not Path(wordlist).exists():
-                    raise WordlistError(f"Wordlist não encontrada: {wordlist}")
-                # Junta a wordlist com o domínio base
-                subs = [l.strip() for l in open(wordlist, encoding="utf-8") if l.strip()]
-                subdomains = [f"{sub}.{domain}" for sub in subs]
-                if verbose:
-                    console.print(f"[dim]Gerados {len(subdomains)} subdomínios a partir da wordlist[/dim]")
-        except IOError as e:
-            raise WordlistError(f"Erro ao ler arquivo: {e}")
-            
-        if not subdomains:
-            console.print("[yellow][!] Nenhum subdomínio carregado para teste.[/yellow]")
-            raise typer.Exit()
-
-        with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), console=console) as progress:
-            task = progress.add_task(f"[cyan]Detectando takeover em {len(subdomains)} alvos...", total=None)
-            
-            try:
-                detector = TakeoverDetector(concurrency=workers)
-                
-                # Prevenção de loop fechado do Typer
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                results = loop.run_until_complete(detector.scan_list(subdomains))
-                loop.close()
-                
-            except Exception as e:
-                raise TakeoverDetectionError(f"Erro durante detecção de takeover: {e}")
-            
-            progress.update(task, completed=True)
-        
-        if results:
-            table = Table(title="🚨 Vulnerabilidades de Subdomain Takeover", show_header=True, header_style="bold red")
-            table.add_column("Subdomínio", style="green", width=30)
-            table.add_column("Serviço", style="yellow", width=15)
-            table.add_column("Tipo de Match", style="cyan", width=30)
-            
-            for result in results:
-                table.add_row(
-                    result['subdomain'],
-                    result['service'],
-                    result['type']
-                )
-            
-            console.print()
-            console.print(table)
-            console.print(f"\n[bold red]⚠️  {len(results)} possíveis takeovers encontrados![/bold red]")
-            op_logger.add_metric("vulnerabilities_found", len(results))
-        else:
-            console.print("\n[green]✓ Nenhum Subdomain Takeover detectado nas verificações.[/green]")
-        
-        if output:
-            save_results({'takeover_vulnerabilities': results}, 'json', output)
 
 
 @app.callback()

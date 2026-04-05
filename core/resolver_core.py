@@ -1,15 +1,14 @@
 import dns.asyncresolver
 import dns.resolver
 import asyncio
-import random
-import string
-from typing import Optional, Dict, List, Set
+
+from typing import Optional, Dict, List
 from asyncio import Semaphore
-from rich.console import Console
 from utils.logger import setup_logger
+from rich import print as rprint
+from rich.console import Console
 
 logger = setup_logger("resolver_core")
-console = Console()
 
 async def resolve_subdomain_async(
     sub: str,
@@ -29,9 +28,6 @@ async def resolve_subdomain_async(
             try:
                 answers = await resolver.resolve(fqdn, rd)
                 result[rd] = [rdata.to_text() for rdata in answers]
-                # Mostra resultados imediatamente quando encontrados
-                for value in result[rd]:
-                    console.print(f"[+] {fqdn} -> {{'{rd}': ['{value}']}}")
             except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN):
                 continue
             except Exception:
@@ -48,9 +44,10 @@ async def enum_subdomains_core(
     types: List[str],
     nameserver: Optional[str] = None,
     workers: int = 20,
+    console: Console = None
 ) -> Dict[str, Dict[str, List[str]]]:
     """
-    Enumera subdomínios com output em tempo real
+    Enumera subdomínios com output em tempo real e visual profissional
     """
     resolver = dns.asyncresolver.Resolver(configure=False)
     if nameserver:
@@ -65,13 +62,34 @@ async def enum_subdomains_core(
     
     tasks = []
     for sub in subs:
+        # Assumindo que resolve_subdomain_async está definida em outro lugar neste arquivo
         tasks.append(resolve_subdomain_async(sub, domain, types, resolver, semaphore))
     
-    results = await asyncio.gather(*tasks)
-    
     combined: Dict[str, Dict[str, List[str]]] = {}
-    for result in results:
+    
+    # Usamos as_completed em vez de gather para ter o "Live Preview" real!
+    for completed_task in asyncio.as_completed(tasks):
+        result = await completed_task
+        
         if result:
+            # result tem o formato: {"sub.dominio.com": {"A": ["1.2.3.4"]}}
+            for subdominio, records in result.items():
+                for rdtype, valores in records.items():
+                    for valor in valores:
+                        
+                        # --- INÍCIO DA ESTILIZAÇÃO DO LIVE PREVIEW ---
+                        if rdtype in ["A", "AAAA"]:
+                            tipo_formatado = f"[bold green][{rdtype}][/]"
+                        elif rdtype == "CNAME":
+                            tipo_formatado = f"[bold yellow][{rdtype}][/]"
+                        elif rdtype == "TXT":
+                            tipo_formatado = f"[bold magenta][{rdtype}][/]"
+                        else:
+                            tipo_formatado = f"[bold cyan][{rdtype}][/]"
+                        
+                        if console:
+                            console.print(f" [bold bright_green][+][/] [white]{subdominio:<35}[/][dim]➔[/] {tipo_formatado:<15} [bright_white]{valor}[/]")
+            
             combined.update(result)
     
     return combined
