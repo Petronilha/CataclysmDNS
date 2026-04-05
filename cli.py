@@ -109,7 +109,6 @@ def handle_specific_errors(func):
         except Exception as e:
             logger.exception(f"Erro não tratado: {e}")
             console.print(f"[red]Erro inesperado: {e}[/]")
-            console.print("[yellow]Considere reportar este erro com --debug[/]")
             raise typer.Exit(1)
     return wrapper
 
@@ -375,18 +374,15 @@ def enum(
 @retry_with_backoff(DNS_RETRY_CONFIG)
 def zone_transfer(
     domain: Annotated[str, typer.Option(help="Domínio alvo")],
-    nameserver: Annotated[str, typer.Option(help="Servidor DNS autoritativo")],
+    nameserver: Annotated[str, typer.Option(help="Servidor DNS autoritativo (IP ou Hostname)")],
     output: Annotated[Optional[str], typer.Option(help="Arquivo de output")] = None,
 ):
-    """Tenta transferência de zona (AXFR)"""
+    """Tenta transferência de zona (AXFR) aceitando IP ou URL"""
     with OperationLogger("zone_transfer_command", logger) as op_logger:
         op_logger.add_metric("domain", domain)
         op_logger.add_metric("nameserver", nameserver)
         
         validate_domain(domain)
-        
-        if not validate_ip(nameserver) and not validate_domain(nameserver):
-            raise InvalidConfigurationError(f"Nameserver inválido: {nameserver}")
         
         try:
             records = attempt_axfr(domain, nameserver)
@@ -397,55 +393,11 @@ def zone_transfer(
             op_logger.add_metric("records_found", sum(len(recs) for recs in records.values()))
         else:
             console.print()  # Linha em branco
-            console.print("[yellow]Nenhum registro encontrado na transferência de zona.[/]")
+            # Já temos os avisos detalhados dentro da função, mas mantemos isso como fallback
+            console.print("[dim yellow]Nenhum registro extraído.[/]")
         
         if output and records:
             save_results({"zone_transfer": records}, "json", output)
-
-
-@app.command()
-@handle_specific_errors
-def brute(
-    domain: Annotated[str, typer.Option(help="Domínio alvo")],
-    wordlist: Annotated[str, typer.Option(help="Wordlist para brute force")] = "wordlists/subdomains.txt",
-    workers: Annotated[int, typer.Option(help="Workers assíncronos")] = 50,
-    output: Annotated[Optional[str], typer.Option(help="Arquivo de output")] = None,
-    progress: Annotated[bool, typer.Option(help="Mostrar barra de progresso")] = True,
-):
-    """Brute force de subdomínios via wordlist"""
-    with OperationLogger("brute_command", logger) as op_logger:
-        op_logger.add_metric("domain", domain)
-        op_logger.add_metric("wordlist", wordlist)
-        
-        validate_domain(domain)
-        
-        if not Path(wordlist).exists():
-            raise WordlistError(f"Wordlist não encontrada: {wordlist}")
-        
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            console=console,
-            disable=not progress,
-        ) as progress_bar:
-            task = progress_bar.add_task(f"[cyan]Brute force em {domain}...", total=None)
-            
-            try:
-                results = asyncio.run(brute_force(domain, wordlist, workers))
-            except Exception as e:
-                raise CataclysmDNSError(f"Erro durante brute force: {e}")
-            
-            progress_bar.update(task, completed=True)
-        
-        if results:
-            display_results_table(results)
-            console.print(f"\n[green]Brute force: {len(results)} subdomínios encontrados.[/]")
-            op_logger.add_metric("results_count", len(results))
-        else:
-            console.print("[yellow]Nenhum subdomínio encontrado no brute force.[/]")
-        
-        if output:
-            save_results(results, "json", output)
 
 @app.command()
 @handle_specific_errors
