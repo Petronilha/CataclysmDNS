@@ -98,12 +98,12 @@ def attempt_axfr(domain: str, nameserver: str) -> dict[str, str]:
             console.print()
         # --- FIM DA CONSTRUÇÃO VISUAL ---
 
-        logger.info(f"[+] AXFR bem-sucedido em {nameserver} ({ns_ip})")
+        logger.info(f" [+] AXFR bem-sucedido em {nameserver} ({ns_ip})")
         return records
         
     except DNSException as e:
-        console.print(f"[red][-][/red] Servidor configurado corretamente. AXFR recusado em {nameserver}.")
+        console.print(f" [red][-][/red] Servidor configurado corretamente. AXFR recusado em {nameserver}.")
         return {}
     except Exception as e:
-        console.print(f"[red][-][/red] Erro de conexão ao tentar AXFR (Timeout ou porta fechada).")
+        console.print(f" [red][-][/red] Erro de conexão ao tentar AXFR (Timeout ou porta fechada).")
         return {}
