@@ -10,7 +10,6 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
-from rich.text import Text
 from rich import box
 from functools import wraps
 import ipaddress
@@ -27,11 +26,11 @@ from core.exceptions import (
     ZoneTransferError,
     TakeoverDetectionError
 )
-from core.resolver_enhanced import create_enhanced_resolver
 from core.resolver_core import enum_subdomains_core
 from utils.enhanced_logger import setup_enhanced_logger, OperationLogger
 from utils.retry_handler import retry_with_backoff, DNS_RETRY_CONFIG
 from utils.log_cleaner import setup_log_cleaning
+from utils.wordlist_loader import load_wordlist
 
 # Imports originais mantidos para compatibilidade
 from core.resolver import (
@@ -39,7 +38,6 @@ from core.resolver import (
     detect_wildcard,
 )
 from core.zone_transfer import attempt_axfr
-from core.rate_limiter import RateLimiter, RateLimitConfig
 
 app = typer.Typer(help="CataclysmDNS — toolkit avançado de pentest DNS")
 console = Console(force_terminal=True)  # Para garantir saída imediata
@@ -331,16 +329,13 @@ def enum(
         if not Path(wordlist).exists():
             raise WordlistError(f"Wordlist não encontrada: {wordlist}")
         
-        rate_limiter = RateLimiter(RateLimitConfig(requests_per_second=rate_limit))
-        resolver = create_enhanced_resolver(nameservers=[nameserver] if nameserver else None, timeout=timeout)
-        
         with Progress(TextColumn(" "), SpinnerColumn(speed=1.5), TextColumn("[progress.description]{task.description}"), console=console) as progress:
             task = progress.add_task(f"[cyan]Enumerando {domain}...", total=None)
             
-            try:
-                subs = [l.strip() for l in open(wordlist, encoding="utf-8") if l.strip()]
-            except IOError as e:
-                raise WordlistError(f"Erro ao ler wordlist: {e}")
+            subs = load_wordlist(wordlist)
+            
+            if not subs:
+                raise WordlistError(f"Não foi possível carregar a wordlist '{wordlist}' ou ela está vazia/inválida.")
             
             if permutations:
                 subs = generate_permutations(subs, limit_permutations=None)
@@ -431,7 +426,8 @@ def main(
     
     # Mostra o banner apenas se não estiver no modo silencioso
     if "--help" not in sys.argv and not quiet:
-        show_banner()
+        #show_banner()
+        pass
     if debug:
         logging.getLogger().setLevel(logging.DEBUG)
     if quiet:
