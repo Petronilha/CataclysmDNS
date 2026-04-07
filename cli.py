@@ -305,7 +305,7 @@ def enum(
     domain: Annotated[str, typer.Option(help="Domínio alvo")],
     wordlist: Annotated[str, typer.Option(help="Wordlist de subdomínios")] = "wordlists/subdomains.txt",
     nameserver: Annotated[Optional[str], typer.Option(help="Servidor DNS customizado (IP)")] = None,
-    workers: Annotated[int, typer.Option(help="Número de workers paralelos")] = 20,
+    workers: Annotated[int, typer.Option(help="Número de workers paralelos")] = 100,
     output: Annotated[Optional[str], typer.Option(help="Arquivo de output")] = None,
     format: Annotated[str, typer.Option(help="Formato do output (json, csv)")] = "json",
     verbose: Annotated[bool, typer.Option("--verbose", "-v", help="Modo verboso")] = False,
@@ -350,7 +350,14 @@ def enum(
             types = ["A", "AAAA", "MX", "TXT", "PTR"]
             
             results = asyncio.run(enum_subdomains_core(
-                domain=domain, subs=subs, types=types, nameserver=nameserver, workers=workers, console=console
+                domain=domain, 
+                subs=subs, 
+                types=types, 
+                nameserver=nameserver, 
+                workers=workers, 
+                console=console,
+                timeout=timeout,
+                rate_limit=rate_limit,
             ))
             
             progress.update(task, completed=True)
